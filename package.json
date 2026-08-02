@@ -1,0 +1,43 @@
+{
+  "name": "@minisend/skill",
+  "version": "0.1.0",
+  "description": "Minisend integration skill for coding agents — accept stablecoins, pay out local currency across Africa.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://docs.minisend.xyz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itschrisoketch/minisend-skills.git"
+  },
+  "bugs": {
+    "url": "https://github.com/itschrisoketch/minisend-skills/issues"
+  },
+  "bin": {
+    "minisend-skill": "bin/install.mjs"
+  },
+  "files": [
+    "bin",
+    "skills",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node scripts/test-install.mjs && node scripts/test-audit.mjs && node scripts/audit.mjs",
+    "audit": "node scripts/audit.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "minisend",
+    "usdc",
+    "stablecoin",
+    "mpesa",
+    "payments",
+    "agent-skill",
+    "claude-code"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

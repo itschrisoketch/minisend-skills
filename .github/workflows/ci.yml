@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The package has no dependencies, so there is nothing to install.
+      - name: Installer, content rules, and payload
+        run: npm test
+
+      - name: Payload ships and dev tooling does not
+        run: |
+          files=$(npm pack --dry-run --json | node -e "
+            let s=''
+            process.stdin.on('data', d => s += d).on('end', () => {
+              const entries = JSON.parse(s)[0].files.map(f => f.path)
+              const missing = ['skills/minisend/SKILL.md', 'bin/install.mjs', 'README.md']
+                .filter(p => !entries.includes(p))
+              const leaked = entries.filter(p => p.startsWith('scripts/'))
+              if (missing.length) { console.error('missing from tarball: ' + missing.join(', ')); process.exit(1) }
+              if (leaked.length) { console.error('dev tooling leaked into tarball: ' + leaked.join(', ')); process.exit(1) }
+              const refs = entries.filter(p => p.startsWith('skills/minisend/references/')).length
+              if (refs !== 9) { console.error('expected 9 references, found ' + refs); process.exit(1) }
+              console.log('tarball contents ok: ' + entries.length + ' files, ' + refs + ' references')
+            })
+          ")
+          echo "$files"
+
+      - name: Reference links resolve
+        run: |
+          cd skills/minisend
+          broken=0
+          for target in $(grep -oh "references/[a-z-]*\.md" SKILL.md references/*.md | sort -u); do
+            if [ ! -f "$target" ]; then echo "BROKEN LINK: $target"; broken=1; fi
+          done
+          [ "$broken" -eq 0 ] && echo "link graph clean"
+          exit $broken
