@@ -101,8 +101,8 @@ Response `201`:
 
 ```json
 {
-  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
-  "checkout_url": "https://merchant.minisend.xyz/checkout/3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "session_id": "cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "checkout_url": "https://merchant.minisend.xyz/checkout/cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
   "deposit_address": "0x1234567890abcdef1234567890abcdef12345678",
   "amount_usdc": 25,
   "expires_at": "2026-07-31T11:00:00.000Z",
@@ -111,6 +111,7 @@ Response `201`:
 ```
 
 - `checkout_url` is the hosted page. Redirecting the customer there is the shortest correct integration — it handles the wallet flow, the QR code, the M-Pesa option, and the live status.
+- `session_id` is the session's identifier, prefixed `cs_` (e.g. `cs_3f9c2a71-…`). It appears in the URL path, on the status endpoint, and on every checkout webhook payload.
 - `deposit_address` is the on-chain destination for the session, on Base. **It is stable across every session on your account** — it is not minted per session. Two open sessions share the same address and are told apart by amount, so do not use the address as a session identifier and do not assume a payment to it belongs to any particular session.
 - `expires_at` is 30 minutes from creation.
 - `status` is always `pending` here.
@@ -137,7 +138,7 @@ Response `200`:
 
 ```json
 {
-  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "session_id": "cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
   "status": "pending",
   "amount_usdc": 25,
   "description": "Order #1183",
@@ -171,7 +172,7 @@ Response `200`:
 
 **This endpoint is not a pure read — it can change the session.** Two side effects:
 
-- **A `pending` session whose `expires_at` has passed is flipped to `expired`** and returned as such. There is no expiry webhook to lose by doing this (see [Webhook events](#webhook-events)), but the transition is real and irreversible for a stablecoin payment.
+- **A `pending` session whose `expires_at` has passed is flipped to `expired`** and returned as such — and this read path itself delivers `checkout.expired` (see [Webhook events](#webhook-events)). The transition is real and irreversible for a stablecoin payment.
 - **A session stuck on `settling` for more than about two minutes triggers a settlement re-check**, which can drive it to `completed` or `failed` on the spot — and deliver `checkout.completed` inline, from within your read. So a poll can be what produces the webhook, and the webhook can arrive while the polling request is still open. Do not assume the two orderings, and do not assume a webhook implies you were not the one who caused it.
 
 Neither side effect is something to avoid — the recovery one is useful — but they mean you cannot treat this endpoint as free of consequences, and a health check that polls every session on a loop is not harmless.
@@ -302,8 +303,8 @@ Response `201`:
 
 ```json
 {
-  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
-  "checkout_url": "https://merchant.minisend.xyz/checkout/3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "session_id": "cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "checkout_url": "https://merchant.minisend.xyz/checkout/cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
   "deposit_address": "0x1234567890abcdef1234567890abcdef12345678",
   "amount_usdc": 0,
   "merchant_amount_usdc": 25,
@@ -347,8 +348,8 @@ Response `201`:
 
 ```json
 {
-  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
-  "checkout_url": "https://merchant.minisend.xyz/checkout/3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "session_id": "cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "checkout_url": "https://merchant.minisend.xyz/checkout/cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
   "gross_kes": 0,
   "network": "Safaricom",
   "phone": "0712345678"
@@ -423,12 +424,13 @@ A failed M-Pesa prompt does **not** move the session to `failed`. It reverts the
 
 ## Webhook events
 
-Checkout emits **two** events to the webhook URL configured on your account:
+Checkout emits **three** events to the webhook URL configured on your account:
 
 | Event | Fires when |
 | --- | --- |
 | `checkout.completed` | The session reached `completed`. |
 | `checkout.failed` | The payout was reported as failed by the settlement provider. |
+| `checkout.expired` | The window passed with no deposit. |
 
 **`checkout.failed` now covers every way a session reaches `failed`.** Earlier versions delivered it only from the payout leg, leaving five paths silent — a deposit on a chain the account does not accept, a payout that could not be initiated, a failed cross-chain sweep, a failure on the payout-confirmation path, and the settlement re-check that `GET /api/merchant/checkout/{session_id}` performs on a stuck session. All five deliver now.
 
@@ -441,7 +443,7 @@ Payload:
 ```json
 {
   "event": "checkout.completed",
-  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "session_id": "cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
   "external_id": "order_1183",
   "payment_method": "crypto",
   "amount_usdc": 25,
@@ -549,8 +551,9 @@ async function poll(sessionId: string, expiresAt: string) {
     const r = await fetch(`${BASE}/api/merchant/checkout/${sessionId}`)
     const s: SessionView = await r.json()
     if (DONE.has(s.status)) return s
-    // Past the window, a read flips a pending session to expired. There is
-    // no expiry webhook either way, so reconcile server-side from here.
+    // Past the window, a read flips a pending session to expired — and that
+    // read path delivers checkout.expired itself. Delivery is retried but
+    // not guaranteed, so reconcile server-side from here as the backstop.
     if (Date.now() >= deadline) return s
     await new Promise((r) => setTimeout(r, 3000))
   }

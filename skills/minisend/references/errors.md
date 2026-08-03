@@ -133,7 +133,7 @@ The defaults are asymmetric: **checkout is opt-out** (enabled by default; the ga
 
 **Every one of these deliberately conflates "does not exist" with "belongs to someone else."** An order id owned by another account returns the same 404 as a made-up one. Do not build logic that tries to distinguish them.
 
-**On the wallet API, a `404` only happens for a well-formed UUID.** Anything that is not a UUID — a `walletRef`, a numeric id, a truncated UUID — produces a `500` instead, so a `404` branch written to catch "that was a ref, not an id" will never fire. Guard the value against a UUID pattern before building the URL.
+**On the wallet API, a `404` also covers a path segment that is not a UUID** — a `walletRef`, a numeric id, a truncated UUID all land on the same `404 { "error": "Wallet not found" }` as an unknown wallet, so a `404` branch does catch "that was a ref, not an id". The value is screened before the lookup; earlier versions returned a `500` here, which is why a defensive non-JSON error-body parse is no longer needed. Validate the value against a UUID pattern on your side only if you need to distinguish "I sent the wrong kind of identifier" from "this wallet is gone".
 
 ## 409 — conflict with the object's current state
 

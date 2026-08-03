@@ -239,13 +239,13 @@ X-Minisend-Signature: <64 lower-case hex characters>    (only when a secret is c
 
 > **About the numbers in the sample payloads below.** Every priced field — `amount_local`, `exchange_rate`, `fee` — is shown as `0` throughout this file. That is a placeholder, not a value. Read the real figures from the live payload; never hardcode them and never derive one from another.
 
-Nine event names exist across three products. **Group them by product and do not assume symmetry** — the products differ in which events exist, which are terminal, and whether two events can describe the same object.
+Ten event names exist across three products. **Group them by product and do not assume symmetry** — the products differ in which events exist, which are terminal, and whether two events can describe the same object.
 
 | Product | Events |
 | --- | --- |
 | Off-ramp | `offramp.completed`, `offramp.failed`, `offramp.expired` |
 | On-ramp | `onramp.completed`, `onramp.released`, `onramp.failed`, `onramp.expired` |
-| Checkout | `checkout.completed`, `checkout.failed` |
+| Checkout | `checkout.completed`, `checkout.failed`, `checkout.expired` |
 | Wallets | none |
 
 ### Off-ramp
@@ -342,7 +342,7 @@ Reconciling non-terminal sessions is still worth doing: delivery is retried but 
 ```json
 {
   "event": "checkout.completed",
-  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "session_id": "cs_3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
   "external_id": "order_1183",
   "payment_method": "crypto",
   "amount_usdc": 25,
