@@ -17,7 +17,7 @@ The two directions do not share a method list. Paybill, till, and bank transfer 
 | --- | --- | --- |
 | Pay someone in KES, NGN, GHS, or UGX from a USDC balance | Off-ramp | `references/offramp.md` |
 | Collect KES via an M-Pesa or Airtel Money prompt and receive USDC | On-ramp | `references/onramp.md` |
-| Create wallets for your own users | Wallets | `references/wallets.md` |
+| Create wallets for your own users, and see what they receive | Wallets | `references/wallets.md` |
 | Accept a payment and settle to a bank or mobile money account | Checkout | `references/checkout.md` |
 
 ## Authenticate

@@ -94,6 +94,8 @@ Recipient-object messages — `Missing recipient object.`, `recipient.account_na
 | Body | Cause |
 | --- | --- |
 | `{ "error": "walletRef is required: 1-128 chars, letters/numbers/_/:/./- only" }` | Missing, empty, not a string, too long, or containing a disallowed character. **A snake_case `wallet_ref` in the request body lands here** — requests are camelCase, responses are snake_case. |
+| `{ "error": "walletRef must be 1-128 chars, letters/numbers/_/:/./- only" }` | The same rule on `GET /api/v1/wallets/by-ref/{wallet_ref}`, worded differently from the create call. Match on status, not text. |
+| `{ "error": "wallet_id must be a wallet id (UUID). To look a wallet up by your own reference, use GET /api/v1/wallets/by-ref/{walletRef}." }` | `GET /api/v1/deposits?wallet_id=…` was given something that is not a UUID. Deliberately a `400` rather than an empty result set, which would read as "this wallet received nothing". |
 | `{ "error": "chain must be one of BASE, MATIC, ARB, OP, ETH, AVAX" }` | `chain` present but not one of the six, **including a correct name in the wrong case**. |
 | `{ "error": "metadata must be a JSON object" }` | `metadata` was a string, number, array, or `null`. |
 | `{ "error": "No active master wallet for <Network> — activate this chain before creating wallets on it." }` | The chain is valid but not activated on your account. **This is an account-state problem returned as a `400`, not a `403`** — and no runtime retry will fix it. Activate the chain in the dashboard first. |
@@ -129,7 +131,7 @@ The defaults are asymmetric: **checkout is opt-out** (enabled by default; the ga
 | `{ "error": "Order not found." }` | Off-ramp and on-ramp single-order reads, and the off-ramp deposit endpoint. |
 | `{ "error": "Checkout session not found" }` | Checkout status and M-Pesa endpoints. |
 | `{ "error": "Merchant not found" }` | Payment-link endpoints, for an unknown slug **and** for an inactive account. Also returned by `POST /api/merchant/checkout/{session_id}/mpesa` when the session resolves but the account behind it cannot be loaded — so on that endpoint a `404` is two different objects, and the body is the only way to tell which. |
-| `{ "error": "Wallet not found" }` | `GET /api/v1/wallets/{wallet_id}`. |
+| `{ "error": "Wallet not found" }` | `GET /api/v1/wallets/{wallet_id}`, `…/{wallet_id}/balance`, `…/{wallet_id}/deposits`, and `GET /api/v1/wallets/by-ref/{wallet_ref}`. |
 
 **Every one of these deliberately conflates "does not exist" with "belongs to someone else."** An order id owned by another account returns the same 404 as a made-up one. Do not build logic that tries to distinguish them.
 
@@ -188,6 +190,7 @@ The important question for each of these is **whether anything was created befor
 
 | Status | Body | Was anything created? | Retry |
 | --- | --- | --- | --- |
+| `502` | `{ "error": "Failed to fetch balance" }` | No. A read. | Yes. The upstream balance lookup failed; it says nothing about the wallet, which still exists. |
 | `502` | `{ "error": "Failed to generate quote." }` | No. | Yes, immediately. Quotes reserve nothing. |
 | `502` | `{ "error": "Failed to price the order." }` | **No.** | Yes, with the same `Idempotency-Key`. |
 | `502` | `{ "error": "Failed to provision deposit address. Retry with a new Idempotency-Key." }` | Off-ramp: the order id is spent. | **New `Idempotency-Key`**, exactly as the message says. |
@@ -200,6 +203,7 @@ The important question for each of these is **whether anything was created befor
 | `500` | `{ "error": "Failed to create wallet" }` | Possibly. | Retry with the **same** `walletRef` — the call is create-or-get, so a retry after a dropped response cannot mint a second address. |
 | `500` | `{ "error": "Merchant has no deposit address. Please re-register." }` / `{ "error": "Merchant has no deposit address. Please contact support." }` / `{ "error": "Merchant wallet unavailable" }` | No. | **Not retryable.** Three different bodies for one account-provisioning condition, across the authenticated create, the payment-link create, and the M-Pesa endpoints. Contact Minisend. |
 | `500` | `{ "error": "Failed to fetch checkout session" }` / `{ "error": "Failed to fetch merchant info" }` / `{ "error": "Failed to quote" }` | Reads. | Yes. |
+| `500` | `{ "error": "Failed to fetch deposits" }` / `{ "error": "Failed to fetch wallet" }` | Reads, on the wallet API. | Yes. |
 
 ## 503 — the product is switched off
 
@@ -243,6 +247,8 @@ The wallet API's `No active master wallet for <Network>` is a `400`, even though
 ### 404 on the wallet API covers three different mistakes
 
 `GET /api/v1/wallets/{wallet_id}` returns the same `404 { "error": "Wallet not found" }` for a UUID that does not exist, one that belongs to another account, and a path segment that is not a UUID at all — most often a `walletRef` passed where an `id` was expected. The uniformity is deliberate for the first two (no cross-account enumeration), and convenient for the third: a `404` handler catches the ref mistake instead of it surfacing as a server error.
+
+That third case now has a proper route: `GET /api/v1/wallets/by-ref/{wallet_ref}` takes your own identifier directly. It returns `400` for a ref that breaks the character rules and `404` for one that is well-formed but unknown, so the two mistakes are distinguishable there in a way they are not on the by-id route.
 
 It does mean a `404` alone will not tell you *which* of the three happened. Validate the value against a UUID pattern on your side if you need to distinguish "I sent the wrong kind of identifier" from "this wallet is gone."
 

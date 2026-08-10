@@ -64,6 +64,14 @@ It still completes. Checkout matches an incoming deposit to a session by address
 
 Yes, on all three: `checkout.expired`, `offramp.expired`, and `onramp.expired` are all delivered. Earlier versions had gaps here — `checkout.expired` was declared but never emitted, and polling an off-ramp or on-ramp order past its `expires_at` expired it in-band and cost you the event — and all of them are closed: the in-band expiry paths now deliver the event themselves. Delivery is still retried rather than guaranteed, so reconciling your own non-terminal orders and sessions on a timer remains a sound backstop. See `references/webhooks.md`.
 
+## How do I know when a wallet I created receives money?
+
+`wallet.deposit.received` fires on the account-wide webhook URL — the same one off-ramp, on-ramp, and checkout deliver to. It carries your own `wallet_ref`, so you can credit the right user without a lookup. **One deposit arrives twice**, at `"state": "confirmed"` then `"state": "complete"`, under the same `deposit_id` and the same event name, so dedupe on `deposit_id` + `state` or you will credit twice. To poll or reconcile instead, `GET /api/v1/deposits` sweeps every wallet on the account. See `references/wallets.md` and `references/webhooks.md`.
+
+## Why does a wallet's balance not match a deposit I was notified about?
+
+Because they cover different chains. A wallet's address is the same on every supported EVM chain, so it can receive on any of them, and the deposit event reports the chain the money actually arrived on. `GET /api/v1/wallets/{wallet_id}/balance` only reports the chain the wallet was issued on — multi-chain balances are not implemented. A deposit on Polygon into a Base-issued wallet therefore shows in the event and not in that balance, and neither figure is wrong. Sum the deposit records if you need a cross-chain total, and tell your users which chain to send on. See `references/wallets.md` (One address, many chains).
+
 ## Are terminal statuses really terminal?
 
 It varies by product, so don't reuse one product's assumption on another. Off-ramp's `completed`, `failed`, and `expired` are genuinely immutable. Checkout's `expired` is terminal for a stablecoin payment but not for an M-Pesa one — a late confirmation can still complete it — and `failed` should be treated as terminal for your own flow control even though it isn't formally sealed. On-ramp is the least final: only `completed` is strictly immutable, and a late confirmation can move `failed` or `expired` all the way to `completed`. See the lifecycle sections of `references/offramp.md`, `references/checkout.md`, and `references/onramp.md`.

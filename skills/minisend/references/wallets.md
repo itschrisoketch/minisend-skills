@@ -21,7 +21,7 @@ Base URL: `https://merchant.minisend.xyz`
 
 Unlike off-ramp and on-ramp order creation, wallet creation carries **no additional per-account cap** — the general limit is the only one.
 
-**There are no webhook events on this API.** Nothing is delivered when a wallet is created. Everything you need comes back in the response to the call you made.
+**Wallet creation delivers no webhook** — everything you need comes back in the response to the call you made. **Deposits do**: `wallet.deposit.received` fires when one of your wallets receives funds. See `references/webhooks.md`, and note it is delivered to the account-wide webhook URL shared with the other products.
 
 ## No test mode
 
@@ -181,7 +181,126 @@ Response `200`: `{ "wallet": { … } }`.
 
 The `404` deliberately does not distinguish an unknown wallet from one on another account.
 
-**There is no lookup-by-`walletRef` endpoint.** Since `walletRef` is your own identifier, the intended pattern is to call `POST /api/v1/wallets` with it again: it returns the existing wallet rather than creating a second one, which makes it a safe idempotent read — and it avoids the failure mode above entirely. Store the returned `id` alongside your user record if you would rather not.
+**If what you hold is your own identifier, use `GET /api/v1/wallets/by-ref/{wallet_ref}` below** rather than this route. Calling `POST /api/v1/wallets` again with the same `walletRef` also returns the existing wallet rather than creating a second one, so it remains a safe idempotent read — but the by-ref route says what you mean.
+
+### `GET /api/v1/wallets/by-ref/{wallet_ref}`
+
+Look a wallet up by **your own** identifier, so you never have to store Minisend's `id` alongside the one you already have.
+
+Response `200`: `{ "wallet": { … } }` — the same wallet object.
+
+| What you pass | What you get |
+| --- | --- |
+| A `walletRef` that exists on your account | `200` and the wallet object |
+| A well-formed `walletRef` that does not exist | `404 { "error": "Wallet not found" }` |
+| A ref that breaks the format rules below | `400 { "error": "walletRef must be 1-128 chars, letters/numbers/_/:/./- only" }` |
+
+Refs are scoped to your account, so two accounts can both use `user_1` without collision.
+
+**Percent-encode the segment** if your ref contains `:` or `.`. Both are legal in a ref and legal in a path, and the endpoint decodes the segment before validating, so encoded and unencoded both work — but encoding is the safer habit if you build the URL by concatenation.
+
+Note the `400` body here differs by one word from the one `POST /api/v1/wallets` returns for the same malformed ref (`must be` rather than `is required:`). Match on the status code, not the text.
+
+### `GET /api/v1/wallets/{wallet_id}/balance`
+
+The wallet's live USDC balance, read from the chain rather than summed from the deposits Minisend recorded — a figure derived from recorded deposits would drift silently the moment a notification was missed.
+
+```json
+{
+  "wallet_id": "9c1f7c62-52c3-4a0d-9f4e-1b7a0d3e8c11",
+  "wallet_ref": "user_8842",
+  "address": "0x1234567890abcdef1234567890abcdef12345678",
+  "chain": "BASE",
+  "token": "USDC",
+  "amount": "0"
+}
+```
+
+**This is the balance on the wallet's issued chain only, and that is not the same set of chains it can receive on.** See [One address, many chains](#one-address-many-chains) — this is the single most consequential thing on this page. The `chain` field tells you which chain the figure covers, so the answer is never ambiguous, but there is no multi-chain total. Do not present this as "the user's balance" without qualifying the chain.
+
+| Status | Body | Cause |
+| --- | --- | --- |
+| `404` | `{ "error": "Wallet not found" }` | Unknown id, another account's wallet, or a non-UUID |
+| `502` | `{ "error": "Failed to fetch balance" }` | The upstream balance read failed. Retry; it is not a statement about the wallet. |
+
+### `GET /api/v1/wallets/{wallet_id}/deposits`
+
+One wallet's deposit history, newest first. The polling counterpart to the `wallet.deposit.received` webhook, and the recovery path when your endpoint was down longer than the retry schedule.
+
+```json
+{
+  "deposits": [ { … } ],
+  "total": 3,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+An unknown wallet is a `404 { "error": "Wallet not found" }` rather than an empty page — "no deposits yet" and "no such wallet" are different answers.
+
+### `GET /api/v1/deposits`
+
+Every deposit across all your wallets, newest first. This is the reconciliation endpoint: sweep it to catch up rather than walking each wallet.
+
+| Parameter | Notes |
+| --- | --- |
+| `wallet_id` | Optional. Narrows to one wallet, same as the per-wallet route. Must be a UUID. |
+| `limit` | Default `20`, capped at `100`. |
+| `offset` | Default `0`. |
+
+**`limit` and `offset` in the response are the values actually applied, not the ones you asked for.** Ask for 500 and you get 100 rows and `"limit": 100`. Page off the echoed values.
+
+A malformed `wallet_id` is a `400`, not an empty result:
+
+```json
+{ "error": "wallet_id must be a wallet id (UUID). To look a wallet up by your own reference, use GET /api/v1/wallets/by-ref/{walletRef}." }
+```
+
+`500 { "error": "Failed to fetch deposits" }` on an unexpected failure.
+
+### The deposit object
+
+```json
+{
+  "id": "b81e4f30-9c22-4f57-84a1-2d6b0e7f1c44",
+  "tenant_id": "3a7d8e11-64bb-4c02-9f10-2e5b7a9c4d33",
+  "wallet_id": "9c1f7c62-52c3-4a0d-9f4e-1b7a0d3e8c11",
+  "wallet_ref": "user_8842",
+  "address": "0x1234567890abcdef1234567890abcdef12345678",
+  "chain": "BASE",
+  "token": "USDC",
+  "amount": "0",
+  "tx_hash": "0xabc…",
+  "from_address": "0xdef…",
+  "state": "complete",
+  "detected_at": "2026-08-07T09:12:00.000Z",
+  "created_at": "2026-08-07T09:12:00.000Z"
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `amount` | **A string, not a number.** A six-decimal token amount. Keep it a string through your own stack and compare with a decimal library; parsing it into a float is how money reconciliation goes wrong. Shown as `"0"` above — a placeholder, like every other figure in these files. |
+| `chain` | **The chain the money actually arrived on**, which may differ from the wallet's `chain`. See [One address, many chains](#one-address-many-chains). |
+| `state` | `confirmed` or `complete`, in that order. One deposit is reported twice — see below. |
+| `tx_hash` | The on-chain hash. `null` until known. |
+| `from_address` | The sender. `null` when not reported. |
+| `detected_at` | When Minisend saw it. Not the block timestamp. |
+
+**`confirmed` then `complete` is one deposit, not two.** The same `id` is reported at both states, and both fire a webhook. Key on `id` and treat `state` as a transition, not a new event.
+
+## One address, many chains
+
+A wallet's address is a smart-contract account, and **the same address exists on every supported EVM chain**. A wallet issued on Base can therefore receive USDC on Polygon, Arbitrum, or any other supported chain, and Minisend records the deposit against the chain it actually arrived on.
+
+Two consequences that pull in opposite directions, and both are real:
+
+- **Deposits report the true chain.** `wallet.deposit.received` and the deposit object carry the chain the money landed on.
+- **`GET /wallets/{id}/balance` reports the issued chain only.** Multi-chain balances are not implemented.
+
+So you can receive a deposit event for `MATIC` and read a balance of `0` from the balance endpoint, and neither is wrong. If you need a total across chains, sum the deposit records yourself and do not expect the balance endpoint to agree.
+
+Tell your users which chain to send on. The address accepting a transfer is not a promise the balance endpoint will show it.
 
 ## The `walletRef` rule
 

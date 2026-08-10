@@ -4,7 +4,7 @@
 
 Minisend POSTs a signed JSON event to one URL configured on your account whenever an off-ramp order, an on-ramp order, or a checkout session reaches a state you need to know about.
 
-**There is one webhook URL and one signing secret for the whole account.** Off-ramp, on-ramp, and checkout all deliver to the same endpoint — you cannot register a different URL per product. Branch on the payload's `event` field. The wallet API emits nothing at all (`references/wallets.md`).
+**There is one webhook URL and one signing secret for the whole account.** Off-ramp, on-ramp, and checkout all deliver to the same endpoint — you cannot register a different URL per product. Branch on the payload's `event` field. That includes the wallet API, which delivers deposit events to the same URL (`references/wallets.md`).
 
 Events are the path to rely on. Every product's status endpoint exists as a fallback. Note that in off-ramp, on-ramp, and checkout, reading an order or session past its expiry window expires it — the read is not side-effect-free, though it does deliver the expiry event. See [Gaps and guarantees](#gaps-and-guarantees).
 
@@ -246,7 +246,7 @@ Nine event names exist across three products. **Group them by product and do not
 | Off-ramp | `offramp.completed`, `offramp.failed`, `offramp.expired` |
 | On-ramp | `onramp.completed`, `onramp.released`, `onramp.failed`, `onramp.expired` |
 | Checkout | `checkout.completed`, `checkout.failed` |
-| Wallets | none |
+| Wallets | `wallet.deposit.received` |
 
 ### Off-ramp
 
@@ -364,9 +364,45 @@ Omitted when unset: `external_id`, `amount_local`, `exchange_rate`, `receipt`, `
 
 Note that checkout keys on `session_id`, not `order_id`, and echoes `external_id` rather than off-ramp's and on-ramp's `external_reference`. `currency` is the account's payout currency **except on an M-Pesa-paid session, where it is always `KES`**, because the local figures on those sessions describe the pay-in. Full field meanings are in `references/checkout.md`.
 
+### Wallets
+
+| Event | Fires when |
+| --- | --- |
+| `wallet.deposit.received` | One of the wallets you created received funds. |
+
+```json
+{
+  "event": "wallet.deposit.received",
+  "deposit_id": "b81e4f30-9c22-4f57-84a1-2d6b0e7f1c44",
+  "wallet_id": "9c1f7c62-52c3-4a0d-9f4e-1b7a0d3e8c11",
+  "wallet_ref": "user_8842",
+  "address": "0x1234567890abcdef1234567890abcdef12345678",
+  "chain": "BASE",
+  "token": "USDC",
+  "amount": "0",
+  "tx_hash": "0xabc…",
+  "from_address": "0xdef…",
+  "state": "complete",
+  "detected_at": "2026-08-07T09:12:00.000Z",
+  "created_at": "2026-08-07T09:12:00.000Z"
+}
+```
+
+Three things about this event specifically:
+
+- **It arrives twice for one deposit**, once with `"state": "confirmed"` and once with `"state": "complete"`, under the same `deposit_id` and the same event name. Dedupe on `deposit_id` + `state`, not on the event name — see [Idempotency](#idempotency). Do not credit a user twice.
+- **`amount` is a string.** A six-decimal token amount. Keep it a string and compare with a decimal library; parsing it into a float is how reconciliation drifts. Shown as `"0"` above — a placeholder like every other figure in this file.
+- **`chain` is the chain the money actually arrived on**, which can differ from the chain the wallet was issued on, because the address is the same on every supported EVM chain. `references/wallets.md` (One address, many chains) has the consequences, including why the balance endpoint may disagree with this event.
+
+`wallet_ref` is your own identifier, so you can route the credit without a lookup.
+
+**Not every account receives this event.** Delivery reuses the account-wide webhook URL and secret. An account provisioned directly by Minisend rather than self-serve may have no webhook destination configured, in which case deposits are still recorded and readable over the API but nothing is delivered. If you expect events and see none, confirm a webhook URL is set before assuming deposits are not being detected — and poll `GET /api/v1/deposits` meanwhile.
+
 ### Null versus absent — the payload is not the object
 
-**Every one of these payloads omits an unset optional field entirely.** The corresponding order and session objects returned by the REST endpoints do the opposite for most fields: the key is present and carries `null`.
+**The off-ramp, on-ramp, and checkout payloads omit an unset optional field entirely.** The corresponding order and session objects returned by the REST endpoints do the opposite for most fields: the key is present and carries `null`.
+
+**`wallet.deposit.received` does not follow that rule.** Its payload carries `null` for an unset `tx_hash` or `from_address` rather than omitting the key — the same convention as the REST objects, and the opposite of the other three payloads. There is no principle here to infer; the deposit payload is simply built differently. Check it with `=== null`, and do not reuse a helper written for the other three events.
 
 ```ts
 // Webhook payload — check for absence.
@@ -439,6 +475,7 @@ There is no `id` or `delivery_id` field. **Build the dedupe key from the payload
 | Off-ramp | `order_id` + `event` | `order_id` alone is sufficient in practice — an order emits at most one distinct event — but the compound key costs nothing and keeps one code path across products. |
 | On-ramp | `order_id` + `event` — **required** | One order legitimately produces several different events: `onramp.released` alongside `onramp.completed`, or `onramp.expired` then `onramp.completed`. Keying on `order_id` alone drops the second one as a duplicate. |
 | Checkout | `session_id` + `event` | A session can deliver two different event names, and `session_id` alone collapses them — so a `checkout.completed` that legitimately follows an outcome you already recorded is dropped as a duplicate. M-Pesa-paid sessions complete after their window closes, which is exactly that shape. |
+| Wallets | `deposit_id` + `state` — **required** | One deposit is delivered twice under the same `event` name, once at `confirmed` and once at `complete`. `deposit_id` alone drops the second; `deposit_id` + `event` drops it too, because the event name does not change. `state` is what differs. |
 
 Two rules on top of the key:
 
@@ -469,7 +506,7 @@ Expiry events that earlier versions dropped — `offramp.expired` and `onramp.ex
 | Gap | Product | What to do |
 | --- | --- | --- |
 | **An on-ramp order that fails at creation emits nothing.** The payment prompt could not be sent, the order is already `failed`, and the response carries no `order_id`. | On-ramp | The `502` on the create call is your only signal. Retry with a **new** `Idempotency-Key`. |
-| **The wallet API emits no events.** | Wallets | Everything you need is in the response to the call you made. |
+| **Wallet *creation* emits no event.** Deposits do. | Wallets | Nothing is delivered when you create a wallet — the response carries everything. `wallet.deposit.received` fires only when funds arrive. |
 
 ## Common mistakes
 
