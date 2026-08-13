@@ -78,7 +78,7 @@ Yes. An account settles either in local currency (`fiat`) or in USDC, and `POST 
 
 ## My session completed but the money is not on the chain I chose. Is that a bug?
 
-Probably not. `checkout.completed` fires as soon as the payment is confirmed, **before** anything is moved to the destination chain — deliberately, so the move never delays a payment confirmation. The move is reported separately by `forward` on `GET /api/merchant/checkout/{session_id}` and, on success, by the `checkout.forwarded` webhook. If your fulfilment depends on funds being on the destination chain rather than on the payment succeeding, gate on `forward.status === "completed"`. Note that a **failed** forward emits no webhook at all, so `forward.status` is the only way to see one. The funds are safe on Base in that case. See `references/checkout.md`.
+Probably not. `checkout.completed` fires as soon as the payment is confirmed, **before** anything is moved to the destination chain — deliberately, so the move never delays a payment confirmation. The move is reported separately by `forward` on `GET /api/merchant/checkout/{session_id}` and, on success, by the `checkout.forwarded` webhook. If your fulfilment depends on funds being on the destination chain rather than on the payment succeeding, gate on `forward.status === "completed"`. A failed forward has its own event, `settlement.forward_failed`, but it is announced by a periodic sweep rather than at the moment of failure, so `forward.status` flips first and remains the fastest signal. Either way the funds are safe on Base; only the move failed. See `references/checkout.md`.
 
 ## A balance came back as null. Does that mean zero?
 

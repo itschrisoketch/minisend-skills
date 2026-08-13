@@ -115,7 +115,8 @@ Response `201`:
 ```
 
 - `checkout_url` is the hosted page. Redirecting the customer there is the shortest correct integration — it handles the wallet flow, the QR code, the M-Pesa option, and the live status.
-- `deposit_address` is the on-chain destination for the session, on Base. **It is stable across every session on your account** — it is not minted per session. Two open sessions share the same address and are told apart by amount, so do not use the address as a session identifier and do not assume a payment to it belongs to any particular session.
+- `deposit_address` is the on-chain destination for the session. **It is stable across every session on your account** and is not minted per session, so two open sessions share it and are told apart by amount. Do not use it as a session identifier, and do not assume a payment to it belongs to any particular session.
+- **The same address works on every chain the account accepts.** It is derived so that it is identical across supported EVM chains, which is why the hosted page can advertise one address for all of them. You do not get a different address per chain and should not look for one.
 - `expires_at` is 30 minutes from creation.
 - `status` is always `pending` here.
 - `description`, `external_id`, and `customer_email` are **not** echoed back. Keep your own copy.
@@ -190,13 +191,13 @@ On a session settling in USDC, `forward` reports the move from Base to the desti
 | `not_started` | The session has not been paid yet. |
 | `pending` | The move is in flight. Also returned when the state is momentarily unreadable, so treat it as "not yet", not as a guarantee of progress. |
 | `completed` | Done. `tx_hash` is the transaction on the destination chain. |
-| `failed` | It will not arrive without intervention. **The funds are safe on Base** — this is a delivery failure, not a loss. Contact Minisend. |
+| `failed` | It will not arrive without intervention. **The funds are safe on Base**, so this is a delivery failure and not a loss. Do not surface it to a customer as a payment problem; the customer's payment succeeded. Contact Minisend. |
 
 `tx_hash` is present only on `completed`.
 
 **`checkout.completed` fires before any of this is attempted.** That is deliberate — forwarding must never delay a payment confirmation — but it means a `completed` session does **not** mean the money has reached Arbitrum. If your fulfilment depends on funds being on the destination chain rather than on the payment having succeeded, gate it on `forward.status === "completed"`, not on the session status.
 
-**A failed forward emits no webhook.** There is no `checkout.forward_failed`. Silence means nothing at all, so `forward.status` is the only place a failure is visible. Poll it on USDC sessions off Base, or you will never learn.
+**A failed forward does emit a webhook: `settlement.forward_failed`.** It is announced by a periodic reconciliation pass rather than at the moment of failure, so it arrives late relative to the failure itself, and it is announced once per session. `forward.status` on this endpoint remains the authoritative live view, and reading it is still the fastest way to know — but you are no longer blind if you only consume webhooks. See `references/webhooks.md`.
 
 **Two field groups only appear conditionally**, and are genuinely absent from the JSON otherwise:
 
@@ -544,6 +545,7 @@ Two read-only endpoints for building your own dashboard instead of using Minisen
   "settlement_mode": "usdc",
   "settlement_chain": "ARB",
   "platform_fee_rate": 0,
+  "platform_fee_basis": "usdc",
   "payout_currency": "KES",
   "available_chains": [
     { "value": "BASE", "label": "Base", "requires_forward": false },
@@ -554,7 +556,15 @@ Two read-only endpoints for building your own dashboard instead of using Minisen
 
 `available_chains` is the set you may pass as `settlement_chain`, with a display label and whether reaching that chain requires a forward after each payment. Only Base does not.
 
-**`platform_fee_rate` has three different bases, and the number alone does not tell you which.** It is a fraction of the USDC amount when settling in USDC, a fraction of the local amount when settling to most currencies, and `0` for at least one payout currency where the margin sits in the exchange rate instead of a separate fee. So `net = amount * (1 - platform_fee_rate)` is wrong in the third case — it will tell a merchant they receive the full amount. Read `payout_currency` and `settlement_mode` alongside it, and treat a `0` as "not expressed as a rate", not as "free". For fee terms, contact `info@minisend.xyz`.
+**`platform_fee_rate` alone is ambiguous. `platform_fee_basis` tells you what it is a rate on**, so read them together and never the rate by itself.
+
+| `platform_fee_basis` | What the rate applies to |
+| --- | --- |
+| `usdc` | A fraction of the USDC deposit, taken out of it. |
+| `local` | A fraction of the **local-currency payout**, not of the USDC amount. Applying it to the USDC figure understates the fee. |
+| `in_rate` | The rate is `0` because the margin sits in the exchange rate instead of a separate fee. |
+
+`net = amount * (1 - platform_fee_rate)` is therefore wrong on `local` and badly wrong on `in_rate`, where it reports the payout as free. Branch on the basis. For fee terms contact `info@minisend.xyz`.
 
 **This endpoint is read-only.** Changing the mode or chain provisions wallets and moves where money lands, so it stays in the dashboard behind a human confirmation. There is no API write.
 
@@ -566,10 +576,11 @@ Per-chain USDC balances for the account.
 {
   "settlement_chain": "ARB",
   "balances": [
-    { "chain": "BASE", "label": "Base", "address": "0x1234…", "balance_usdc": 0, "is_settlement_chain": false },
-    { "chain": "ARB", "label": "Arbitrum", "address": "0x1234…", "balance_usdc": 0, "is_settlement_chain": true }
+    { "chain": "BASE", "label": "Base", "address": "0x1234…", "balance_usdc": 0, "balance_available": true, "is_settlement_chain": false },
+    { "chain": "ARB", "label": "Arbitrum", "address": "0x1234…", "balance_usdc": 0, "balance_available": true, "is_settlement_chain": true }
   ],
-  "total_usdc": 0
+  "total_usdc": 0,
+  "total_available": true
 }
 ```
 
@@ -581,6 +592,8 @@ Only chains the account actually holds a wallet on are listed — Base always, p
 - `total_usdc: null` means at least one chain failed, so no total is offered rather than a confident number that silently omits a chain.
 
 Treating either `null` as `0` tells a merchant their balance vanished. Render "unavailable" and retry.
+
+**Two booleans say the same thing without you having to reason about `null`.** `balance_available` is `false` on any chain whose lookup failed, and `total_available` is `false` when at least one did. Branch on those rather than on the nulls, since a boolean is much harder to coerce by accident than a `null` is.
 
 | Status | Body | Meaning |
 | --- | --- | --- |

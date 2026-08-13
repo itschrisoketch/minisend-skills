@@ -245,7 +245,7 @@ Nine event names exist across three products. **Group them by product and do not
 | --- | --- |
 | Off-ramp | `offramp.completed`, `offramp.failed`, `offramp.expired` |
 | On-ramp | `onramp.completed`, `onramp.released`, `onramp.failed`, `onramp.expired` |
-| Checkout | `checkout.completed`, `checkout.failed`, `checkout.forwarded` |
+| Checkout | `checkout.completed`, `checkout.failed`, `checkout.expired`, `checkout.forwarded`, `settlement.forward_failed` |
 | Wallets | `wallet.deposit.received` |
 
 ### Off-ramp
@@ -358,7 +358,19 @@ Three things to hold onto:
 
 - **You will only see this if you settle in USDC on a chain other than Base.** Accounts settling in local currency, and USDC accounts settling on Base, never receive it — nothing has to move.
 - **It arrives after `checkout.completed`, sometimes well after.** `checkout.completed` fires as soon as the payment is confirmed, before any move is attempted, so that forwarding never delays a payment confirmation. A `completed` session is paid; it is not necessarily settled where you asked. If your fulfilment needs the funds on the destination chain, gate on this event.
-- **A failed forward emits nothing.** There is no failure counterpart to this event. Silence is not a signal — it is indistinguishable from a move still in flight. The only way to see a failure is `forward.status` on `GET /api/merchant/checkout/{session_id}`, documented in `references/checkout.md`. If you rely on this event alone, a failed forward is invisible to you forever.
+- **There is a failure counterpart, and it behaves differently.** See `settlement.forward_failed` below. It does not arrive at the moment of failure, so `forward.status` is still the fastest signal.
+
+#### `settlement.forward_failed`
+
+Fires when a forward is judged definitively dead — it will not arrive without intervention.
+
+Note the event name is **not** `checkout.forward_failed`. It is namespaced to settlement rather than to checkout, deliberately: the customer's payment succeeded, and the failure is on the leg that moves the merchant's own money. If your handler switches on a `checkout.` prefix, this one falls through it.
+
+Three properties worth designing around:
+
+- **It is announced by a periodic reconciliation pass, not at the instant of failure.** Expect a delay between the forward dying and this arriving. `forward.status` on the status endpoint flips first.
+- **It is announced once.** The pass records that it has announced a given session and does not re-announce, so treat it as a one-shot notification rather than something that will repeat until you acknowledge it.
+- **It is not a customer-facing payment failure.** The money is safe on Base; only the move to the destination chain failed. Surfacing this to a buyer as a failed payment would be wrong.
 
 ```json
 {
@@ -529,6 +541,7 @@ Expiry events that earlier versions dropped — `offramp.expired` and `onramp.ex
 | --- | --- | --- |
 | **An on-ramp order that fails at creation emits nothing.** The payment prompt could not be sent, the order is already `failed`, and the response carries no `order_id`. | On-ramp | The `502` on the create call is your only signal. Retry with a **new** `Idempotency-Key`. |
 | **Wallet *creation* emits no event.** Deposits do. | Wallets | Nothing is delivered when you create a wallet — the response carries everything. `wallet.deposit.received` fires only when funds arrive. |
+| **`settlement.forward_failed` is announced late, and once.** | Checkout, USDC settlement | A periodic sweep announces it, so it lags the failure. `forward.status` on the status endpoint flips first and is the live view. It is announced a single time per session, so do not wait for a repeat. |
 
 ## Common mistakes
 
