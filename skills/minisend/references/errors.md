@@ -96,6 +96,7 @@ Recipient-object messages — `Missing recipient object.`, `recipient.account_na
 | `{ "error": "walletRef is required: 1-128 chars, letters/numbers/_/:/./- only" }` | Missing, empty, not a string, too long, or containing a disallowed character. **A snake_case `wallet_ref` in the request body lands here** — requests are camelCase, responses are snake_case. |
 | `{ "error": "walletRef must be 1-128 chars, letters/numbers/_/:/./- only" }` | The same rule on `GET /api/v1/wallets/by-ref/{wallet_ref}`, worded differently from the create call. Match on status, not text. |
 | `{ "error": "wallet_id must be a wallet id (UUID). To look a wallet up by your own reference, use GET /api/v1/wallets/by-ref/{walletRef}." }` | `GET /api/v1/deposits?wallet_id=…` was given something that is not a UUID. Deliberately a `400` rather than an empty result set, which would read as "this wallet received nothing". |
+| `{ "error": "Invalid settlement_mode. Must be 'fiat' or 'usdc'." }` / `{ "error": "Invalid settlement_chain. Must be one of BASE, ARB, AVAX, OP, ETH, MATIC." }` | The per-session settlement overrides on `POST /api/merchant/checkout`. |
 | `{ "error": "chain must be one of BASE, MATIC, ARB, OP, ETH, AVAX" }` | `chain` present but not one of the six, **including a correct name in the wrong case**. |
 | `{ "error": "metadata must be a JSON object" }` | `metadata` was a string, number, array, or `null`. |
 | `{ "error": "No active master wallet for <Network> — activate this chain before creating wallets on it." }` | The chain is valid but not activated on your account. **This is an account-state problem returned as a `400`, not a `403`** — and no runtime retry will fix it. Activate the chain in the dashboard first. |
@@ -136,6 +137,18 @@ The defaults are asymmetric: **checkout is opt-out** (enabled by default; the ga
 **Every one of these deliberately conflates "does not exist" with "belongs to someone else."** An order id owned by another account returns the same 404 as a made-up one. Do not build logic that tries to distinguish them.
 
 **On the wallet API, a `404` only happens for a well-formed UUID.** Anything that is not a UUID — a `walletRef`, a numeric id, a truncated UUID — produces a `500` instead, so a `404` branch written to catch "that was a ref, not an id" will never fire. Guard the value against a UUID pattern before building the URL.
+
+## 402 — the plan does not cover it
+
+Only the wallet API returns this, and only on `POST /api/v1/wallets`.
+
+```json
+{ "error": "The free plan includes 100 addresses and you have used all of them. Upgrade to generate more." }
+```
+
+The request was valid and the key was accepted; the account's monthly address allowance is exhausted on a plan that blocks rather than bills. **Distinct from `403` on purpose** — `403` means you may not do this, `402` means you may but your plan is full. Branch on them differently: `402` is an upgrade prompt, `403` is an access request.
+
+Only reachable on plans that block. A plan that meters overage keeps creating addresses and bills for them, so you will never see this on one. The allowance counts addresses created in the current billing period, so it clears on rollover. See `references/wallets.md` (Tiers).
 
 ## 409 — conflict with the object's current state
 

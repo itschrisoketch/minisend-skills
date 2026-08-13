@@ -115,6 +115,7 @@ Errors:
 | `400` | `{ "error": "walletRef is required: 1-128 chars, letters/numbers/_/:/./- only" }` | Missing, empty, not a string, too long, or containing a disallowed character. |
 | `400` | `{ "error": "chain must be one of BASE, MATIC, ARB, OP, ETH, AVAX" }` | `chain` was present but not one of the six, including a correct name in the wrong case. |
 | `400` | `{ "error": "metadata must be a JSON object" }` | `metadata` was a string, number, array, or `null`. |
+| `402` | `{ "error": "The free plan includes 100 addresses and you have used all of them. Upgrade to generate more." }` | The plan's monthly address allowance is used up **and the plan blocks rather than bills**. Only reachable on `free`. Not a permissions problem — see [Tiers](#tiers). |
 | `400` | `{ "error": "No active master wallet for Base — activate this chain before creating wallets on it." }` | The chain is valid but not activated on your account. See [Chains and tiers](#chains-and-tiers). |
 | `401` / `403` | See `references/authentication.md`. | Key or account problem. |
 | `429` | `{ "error": "Rate limit exceeded" }` | General limit. |
@@ -354,17 +355,33 @@ Omitting `chain` entirely defaults to `BASE`.
 
 ### Tiers
 
-Your account carries a tier, which decides which chains you are eligible to activate:
+Your account carries a plan. It constrains two separate things, and they do not move together:
 
-| Tier | Chains |
-| --- | --- |
-| `free` | `BASE` only |
-| `premium` | All six |
-| `enterprise` | All six |
+| Plan | Chains you may activate | How many at once | Addresses per month |
+| --- | --- | --- | --- |
+| `free` | `BASE` only | 1 | A monthly allowance, and creation **stops** when it runs out |
+| `growth` | Any of the six | **3** | A larger monthly allowance, and creation **continues** past it |
+| `enterprise` | Any of the six | 6 | No allowance |
 
-`premium` and `enterprise` have **identical** chain eligibility today; the two are kept distinct for future differentiation. Do not write logic that expects `enterprise` to unlock a chain `premium` does not.
+**Eligibility and activation limits are different constraints.** `growth` may pick from all six chains but can only have three activated at a time — so which three is a choice you make, not a given. `enterprise` is the only plan where eligibility and limit are the same number.
 
-The number of chains you can have activated at once is the size of your tier's set — one for `free`, six for the other two. In other words the tier limits *which* chains, not how many of the allowed ones you use.
+An earlier plan named `premium` was renamed to `growth`. If you have logic branching on the string `premium`, it will not match.
+
+**The address allowance resets monthly**, and the two plans below enterprise treat exhaustion in opposite ways:
+
+- **`free` blocks.** `POST /api/v1/wallets` returns `402` and no address is created:
+
+  ```json
+  { "error": "The free plan includes 100 addresses and you have used all of them. Upgrade to generate more." }
+  ```
+
+  The status is `402`, deliberately distinct from `403` — the request was valid and authenticated, and the plan simply does not cover it. Branch on it: a `402` means upgrade, a `403` means access.
+
+- **`growth` does not block.** Addresses past the allowance are still created and are billed instead, so a signup flow never breaks mid-month. You will not see a `402` on `growth`; you will see it on the invoice.
+
+The allowance counts addresses **created in the current billing period**, not the total you hold. A `free` account blocked today is unblocked when the period rolls over.
+
+Figures in that error message are the live ones for your plan — read them from the response rather than hardcoding. For current plan terms contact `info@minisend.xyz`.
 
 ### Activation, and the error when you skip it
 

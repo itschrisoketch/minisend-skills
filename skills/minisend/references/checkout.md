@@ -96,6 +96,8 @@ Request:
 | `description` | no | Shown to the customer on the hosted page. |
 | `external_id` | no | Your own identifier. Echoed back on the webhook as `external_id`. The only reliable join key back to your own records — set it. |
 | `customer_email` | no | Recorded on the session. Not returned by the public status endpoint. |
+| `settlement_mode` | no | `fiat` or `usdc`. Defaults to the account's configured mode. `fiat` pays out local currency; `usdc` keeps the proceeds in USDC. |
+| `settlement_chain` | no | One of `BASE`, `ARB`, `AVAX`, `OP`, `ETH`, `MATIC`. Defaults to the account's configured chain. Only meaningful when the session settles in USDC — see the wart below. |
 
 Response `201`:
 
@@ -106,7 +108,9 @@ Response `201`:
   "deposit_address": "0x1234567890abcdef1234567890abcdef12345678",
   "amount_usdc": 25,
   "expires_at": "2026-07-31T11:00:00.000Z",
-  "status": "pending"
+  "status": "pending",
+  "settlement_mode": "usdc",
+  "settlement_chain": "ARB"
 }
 ```
 
@@ -115,6 +119,9 @@ Response `201`:
 - `expires_at` is 30 minutes from creation.
 - `status` is always `pending` here.
 - `description`, `external_id`, and `customer_email` are **not** echoed back. Keep your own copy.
+- `settlement_mode` and `settlement_chain` are echoed back, resolved — you see the account default when you sent nothing.
+
+**`settlement_chain` is echoed on fiat sessions too, and means nothing there.** Nothing is forwarded when the session settles in local currency. `settlement_mode` in the same response is the only thing that tells you whether the chain is live or inert, so branch on the mode, never on the presence of a chain.
 
 Errors:
 
@@ -122,6 +129,9 @@ Errors:
 | --- | --- | --- |
 | `400` | `{ "error": "Invalid amount. Must be a positive number (USDC)." }` | Missing, non-numeric, non-finite, or non-positive `amount`. |
 | `400` | `{ "error": "Amount exceeds maximum of $50,000 USDC per checkout." }` | Above the per-session ceiling. The figure in the message is the configured ceiling — read it from the message rather than hardcoding it. |
+| `400` | `{ "error": "Invalid settlement_mode. Must be 'fiat' or 'usdc'." }` | `settlement_mode` was present but not one of the two. |
+| `400` | `{ "error": "Invalid settlement_chain. Must be one of BASE, ARB, AVAX, OP, ETH, MATIC." }` | `settlement_chain` was present but not one of the six, including a correct name in the wrong case. |
+| `502` | Provisioning failure on the destination chain. | **Nothing was created.** A USDC session on a chain the account has not used before provisions a destination wallet during the create call, and this is that step failing. Deliberately surfaced here rather than letting the session succeed and quietly fail to forward later. Retry. |
 | `401` / `403` | See `references/authentication.md`. | Key missing, invalid, or not permitted. |
 | `429` | Creation cap or general limit. | See [Requirements](#requirements). |
 | `500` | `{ "error": "Merchant has no deposit address. Please re-register." }` | The account has no deposit address provisioned. |
@@ -146,6 +156,8 @@ Response `200`:
   "created_at": "2026-07-31T10:30:00.000Z",
   "payment_method": "crypto",
   "awaiting_onramp": false,
+  "settlement_chain": "ARB",
+  "forward": { "status": "not_started", "chain": "ARB" },
   "merchant": {
     "business_name": "Example Traders",
     "logo_url": "https://example.com/logo.png",
@@ -161,6 +173,30 @@ Response `200`:
 | `payment_method` | `crypto` or `mpesa`. **Defaults to `crypto`** — it is never `null`, and it stays `crypto` until an M-Pesa payment is actually started on the session. |
 | `awaiting_onramp` | `true` only while an M-Pesa prompt is in flight on a still-`pending` session. This is the "check your phone" signal. It goes back to `false` if the prompt fails and the session reverts to being payable in stablecoin. |
 | `merchant` | Display info for rendering your own page, or `null` if the account record could not be loaded. `accepted_chains` is the set of chain codes this account accepts stablecoin deposits on — see [What the customer can pay with](#what-the-customer-can-pay-with). An empty array or a `null` here means the account predates the setting; read it as "all supported chains", not "none". |
+| `settlement_chain` | Where the proceeds end up. **USDC-settling sessions only.** |
+| `forward` | The state of the move to that chain. **USDC-settling sessions only.** See below. |
+
+#### `forward` — where the money actually is
+
+On a session settling in USDC, `forward` reports the move from Base to the destination chain.
+
+```json
+{ "status": "completed", "chain": "ARB", "tx_hash": "0xabc…" }
+```
+
+| `status` | Meaning |
+| --- | --- |
+| `not_required` | The destination is Base. Nothing has to move; the money is already there. |
+| `not_started` | The session has not been paid yet. |
+| `pending` | The move is in flight. Also returned when the state is momentarily unreadable, so treat it as "not yet", not as a guarantee of progress. |
+| `completed` | Done. `tx_hash` is the transaction on the destination chain. |
+| `failed` | It will not arrive without intervention. **The funds are safe on Base** — this is a delivery failure, not a loss. Contact Minisend. |
+
+`tx_hash` is present only on `completed`.
+
+**`checkout.completed` fires before any of this is attempted.** That is deliberate — forwarding must never delay a payment confirmation — but it means a `completed` session does **not** mean the money has reached Arbitrum. If your fulfilment depends on funds being on the destination chain rather than on the payment having succeeded, gate it on `forward.status === "completed"`, not on the session status.
+
+**A failed forward emits no webhook.** There is no `checkout.forward_failed`. Silence means nothing at all, so `forward.status` is the only place a failure is visible. Poll it on USDC sessions off Base, or you will never learn.
 
 **Two field groups only appear conditionally**, and are genuinely absent from the JSON otherwise:
 
@@ -471,6 +507,19 @@ A delivery your endpoint does not acknowledge with a 2xx is retried with backoff
 
 ## Settlement
 
+**An account settles one of two ways, and it changes what "completed" means.**
+
+| Mode | What happens when a session completes |
+| --- | --- |
+| `fiat` | The proceeds are converted and paid out to the local payout account on file. |
+| `usdc` | The proceeds stay in USDC and are moved to the account's settlement chain. No local currency is involved. |
+
+The mode is a property of the account, but `POST /api/merchant/checkout` accepts `settlement_mode` and `settlement_chain` per session if you need to override it. Read the current configuration from `GET /api/merchant/settlement` rather than assuming.
+
+The rest of this section describes `fiat`. For `usdc`, the money never becomes local currency: there is no `amount_local`, no `exchange_rate`, no payout receipt, and `forward` on the status endpoint is what tells you where the funds are.
+
+### Settling in local currency
+
 A session that reaches `completed` has been paid out in local currency to the payout account configured on your Minisend account — the mobile money number, till, paybill, or bank account you set in the dashboard. The payout destination is a property of the account, not of the session; there is no per-session payout field and no way to redirect one session's proceeds. To change where money lands, change the account's payout configuration.
 
 `amount_local`, `exchange_rate`, and `settlement_receipt` on a `completed` session describe that payout. Read them back; do not compute the local amount from a rate you fetched earlier.
@@ -483,6 +532,63 @@ A Minisend fee applies to checkout, and **the two creation paths treat it differ
 - **Authenticated create** (`POST /api/merchant/checkout`) — no gross-up. `amount` is exactly what the customer sends, and the fee comes out on the payout side, so the local amount that lands is less than a straight conversion of `amount`. If you need the business to net a specific figure on this path, gross it up yourself before you call.
 
 For current rates and fee terms, contact Minisend at `info@minisend.xyz`.
+
+## Reading your configuration and balances
+
+Two read-only endpoints for building your own dashboard instead of using Minisend's. Both take an `ms_live_` key with the `checkout` scope — the same key you already create sessions with, no new scope to request.
+
+### `GET /api/merchant/settlement`
+
+```json
+{
+  "settlement_mode": "usdc",
+  "settlement_chain": "ARB",
+  "platform_fee_rate": 0,
+  "payout_currency": "KES",
+  "available_chains": [
+    { "value": "BASE", "label": "Base", "requires_forward": false },
+    { "value": "ARB", "label": "Arbitrum", "requires_forward": true }
+  ]
+}
+```
+
+`available_chains` is the set you may pass as `settlement_chain`, with a display label and whether reaching that chain requires a forward after each payment. Only Base does not.
+
+**`platform_fee_rate` has three different bases, and the number alone does not tell you which.** It is a fraction of the USDC amount when settling in USDC, a fraction of the local amount when settling to most currencies, and `0` for at least one payout currency where the margin sits in the exchange rate instead of a separate fee. So `net = amount * (1 - platform_fee_rate)` is wrong in the third case — it will tell a merchant they receive the full amount. Read `payout_currency` and `settlement_mode` alongside it, and treat a `0` as "not expressed as a rate", not as "free". For fee terms, contact `info@minisend.xyz`.
+
+**This endpoint is read-only.** Changing the mode or chain provisions wallets and moves where money lands, so it stays in the dashboard behind a human confirmation. There is no API write.
+
+### `GET /api/merchant/balances`
+
+Per-chain USDC balances for the account.
+
+```json
+{
+  "settlement_chain": "ARB",
+  "balances": [
+    { "chain": "BASE", "label": "Base", "address": "0x1234…", "balance_usdc": 0, "is_settlement_chain": false },
+    { "chain": "ARB", "label": "Arbitrum", "address": "0x1234…", "balance_usdc": 0, "is_settlement_chain": true }
+  ],
+  "total_usdc": 0
+}
+```
+
+Only chains the account actually holds a wallet on are listed — Base always, plus any chain it has been forwarded to. A chain missing from the array has never been used, not "has zero".
+
+**`null` does not mean zero, and this is the one thing on this endpoint that matters.**
+
+- `balance_usdc: null` means that chain's lookup failed. The money is not gone; it could not be read.
+- `total_usdc: null` means at least one chain failed, so no total is offered rather than a confident number that silently omits a chain.
+
+Treating either `null` as `0` tells a merchant their balance vanished. Render "unavailable" and retry.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `409` | `{ "error": "No wallet provisioned for this account." }` | The account has no deposit wallet yet. Not retryable. |
+| `503` | `{ "error": "Could not read balances right now. Please retry." }` | A lookup the endpoint refuses to guess past. Retry. |
+| `500` | `{ "error": "Failed to fetch balances" }` | Unexpected failure. Retry. |
+
+**A note on scope.** These are gated by `checkout`, which is enabled by default on every account — so any `ms_live_` key that can create a session can also read your per-chain balances, total, and addresses. It cannot move funds. If you put a checkout key somewhere you would not put treasury figures, that is worth knowing before you ship.
 
 ## Worked example
 

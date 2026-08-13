@@ -245,7 +245,7 @@ Nine event names exist across three products. **Group them by product and do not
 | --- | --- |
 | Off-ramp | `offramp.completed`, `offramp.failed`, `offramp.expired` |
 | On-ramp | `onramp.completed`, `onramp.released`, `onramp.failed`, `onramp.expired` |
-| Checkout | `checkout.completed`, `checkout.failed` |
+| Checkout | `checkout.completed`, `checkout.failed`, `checkout.forwarded` |
 | Wallets | `wallet.deposit.received` |
 
 ### Off-ramp
@@ -330,6 +330,7 @@ Omitted when unset: `external_reference`, `receipt_number`, `release_tx_hash`, `
 | `checkout.completed` | The session reached `completed`. |
 | `checkout.failed` | The session reached `failed`, by any route. |
 | `checkout.expired` | The window passed with no deposit. |
+| `checkout.forwarded` | A USDC-settling session's proceeds reached the destination chain. |
 
 **`checkout.expired` is delivered**, from whichever of two paths gets there first: the periodic sweep, or a read of the status endpoint past `expires_at`, which expires the session in-band. The status flip is atomic, so exactly one of them delivers and you will not see a duplicate. Earlier versions declared this event but emitted nothing.
 
@@ -338,6 +339,26 @@ Omitted when unset: `external_reference`, `receipt_number`, `release_tx_hash`, `
 **`checkout.failed` now covers every way a session reaches `failed`.** Earlier versions delivered it only from the payout leg, leaving five paths silent: a payout that could not be initiated, a deposit on a chain the account does not accept, a failed cross-chain sweep, a failure on the payout-confirmation path, and the settlement re-check the status endpoint performs on a session stuck at `settling`. That last one was the sharpest — the re-check delivered `checkout.completed` when it found the payout complete but nothing when it found it failed, so the very read that discovered a failure was the one guaranteed not to report it. All five deliver now.
 
 Reconciling non-terminal sessions is still worth doing: delivery is retried but never guaranteed, and a `failed` you learn from a poll should be recorded from the poll rather than waiting for the event to repeat it.
+
+#### `checkout.forwarded`
+
+Fires when a session settling in USDC has its proceeds confirmed on the destination chain. The payload is the standard checkout payload plus two fields:
+
+```json
+{
+  "event": "checkout.forwarded",
+  "session_id": "3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410",
+  "status": "completed",
+  "settlement_chain": "ARB",
+  "forward_tx_hash": "0xabc…"
+}
+```
+
+Three things to hold onto:
+
+- **You will only see this if you settle in USDC on a chain other than Base.** Accounts settling in local currency, and USDC accounts settling on Base, never receive it — nothing has to move.
+- **It arrives after `checkout.completed`, sometimes well after.** `checkout.completed` fires as soon as the payment is confirmed, before any move is attempted, so that forwarding never delays a payment confirmation. A `completed` session is paid; it is not necessarily settled where you asked. If your fulfilment needs the funds on the destination chain, gate on this event.
+- **A failed forward emits nothing.** There is no failure counterpart to this event. Silence is not a signal — it is indistinguishable from a move still in flight. The only way to see a failure is `forward.status` on `GET /api/merchant/checkout/{session_id}`, documented in `references/checkout.md`. If you rely on this event alone, a failed forward is invisible to you forever.
 
 ```json
 {
@@ -475,6 +496,7 @@ There is no `id` or `delivery_id` field. **Build the dedupe key from the payload
 | Off-ramp | `order_id` + `event` | `order_id` alone is sufficient in practice — an order emits at most one distinct event — but the compound key costs nothing and keeps one code path across products. |
 | On-ramp | `order_id` + `event` — **required** | One order legitimately produces several different events: `onramp.released` alongside `onramp.completed`, or `onramp.expired` then `onramp.completed`. Keying on `order_id` alone drops the second one as a duplicate. |
 | Checkout | `session_id` + `event` | A session can deliver two different event names, and `session_id` alone collapses them — so a `checkout.completed` that legitimately follows an outcome you already recorded is dropped as a duplicate. M-Pesa-paid sessions complete after their window closes, which is exactly that shape. |
+| Checkout, USDC settlement | `session_id` + `event` | `checkout.forwarded` arrives after `checkout.completed` for the same session. Keying on `session_id` alone drops it, and with it the only positive confirmation that the money reached the destination chain. |
 | Wallets | `deposit_id` + `state` — **required** | One deposit is delivered twice under the same `event` name, once at `confirmed` and once at `complete`. `deposit_id` alone drops the second; `deposit_id` + `event` drops it too, because the event name does not change. `state` is what differs. |
 
 Two rules on top of the key:

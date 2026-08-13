@@ -72,6 +72,18 @@ Yes, on all three: `checkout.expired`, `offramp.expired`, and `onramp.expired` a
 
 Because they cover different chains. A wallet's address is the same on every supported EVM chain, so it can receive on any of them, and the deposit event reports the chain the money actually arrived on. `GET /api/v1/wallets/{wallet_id}/balance` only reports the chain the wallet was issued on — multi-chain balances are not implemented. A deposit on Polygon into a Base-issued wallet therefore shows in the event and not in that balance, and neither figure is wrong. Sum the deposit records if you need a cross-chain total, and tell your users which chain to send on. See `references/wallets.md` (One address, many chains).
 
+## Can I be paid in USDC instead of local currency?
+
+Yes. An account settles either in local currency (`fiat`) or in USDC, and `POST /api/merchant/checkout` accepts `settlement_mode` and `settlement_chain` to override the account default per session. Settling in USDC means no conversion happens at all: no `amount_local`, no exchange rate, no payout receipt. Read your current configuration from `GET /api/merchant/settlement`, which also lists the chains you may select. See `references/checkout.md` (Settlement).
+
+## My session completed but the money is not on the chain I chose. Is that a bug?
+
+Probably not. `checkout.completed` fires as soon as the payment is confirmed, **before** anything is moved to the destination chain — deliberately, so the move never delays a payment confirmation. The move is reported separately by `forward` on `GET /api/merchant/checkout/{session_id}` and, on success, by the `checkout.forwarded` webhook. If your fulfilment depends on funds being on the destination chain rather than on the payment succeeding, gate on `forward.status === "completed"`. Note that a **failed** forward emits no webhook at all, so `forward.status` is the only way to see one. The funds are safe on Base in that case. See `references/checkout.md`.
+
+## A balance came back as null. Does that mean zero?
+
+No, and treating it as zero is the mistake this warns about. On `GET /api/merchant/balances`, `balance_usdc: null` means that chain's lookup failed, and `total_usdc: null` means at least one chain failed so no total is offered rather than one that silently omits a chain. Show "unavailable" and retry. The same rule holds for the wallet API's balance endpoint. See `references/checkout.md`.
+
 ## Are terminal statuses really terminal?
 
 It varies by product, so don't reuse one product's assumption on another. Off-ramp's `completed`, `failed`, and `expired` are genuinely immutable. Checkout's `expired` is terminal for a stablecoin payment but not for an M-Pesa one — a late confirmation can still complete it — and `failed` should be treated as terminal for your own flow control even though it isn't formally sealed. On-ramp is the least final: only `completed` is strictly immutable, and a late confirmation can move `failed` or `expired` all the way to `completed`. See the lifecycle sections of `references/offramp.md`, `references/checkout.md`, and `references/onramp.md`.
