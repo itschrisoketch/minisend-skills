@@ -86,7 +86,8 @@ Request:
   "amount": 25,
   "description": "Order #1183",
   "external_id": "order_1183",
-  "customer_email": "customer@example.com"
+  "customer_email": "customer@example.com",
+  "redirect_url": "https://yourstore.com/orders/1183/thanks"
 }
 ```
 
@@ -98,6 +99,7 @@ Request:
 | `customer_email` | no | Recorded on the session. Not returned by the public status endpoint. |
 | `settlement_mode` | no | `fiat` or `usdc`. Defaults to the account's configured mode. `fiat` pays out local currency; `usdc` keeps the proceeds in USDC. |
 | `settlement_chain` | no | One of `BASE`, `ARB`, `AVAX`, `OP`, `ETH`, `MATIC`. Defaults to the account's configured chain. Only meaningful when the session settles in USDC — see the wart below. |
+| `redirect_url` | no | Where the customer is sent once the payment is done. Absolute `https` URL, at most 2048 characters, no embedded username or password. `return_url` and `success_url` are accepted as aliases. See [Sending the customer back](#sending-the-customer-back-to-your-site). |
 
 Response `201`:
 
@@ -110,7 +112,8 @@ Response `201`:
   "expires_at": "2026-07-31T11:00:00.000Z",
   "status": "pending",
   "settlement_mode": "usdc",
-  "settlement_chain": "ARB"
+  "settlement_chain": "ARB",
+  "redirect_url": "https://yourstore.com/orders/1183/thanks"
 }
 ```
 
@@ -120,6 +123,7 @@ Response `201`:
 - `expires_at` is 30 minutes from creation.
 - `status` is always `pending` here.
 - `description`, `external_id`, and `customer_email` are **not** echoed back. Keep your own copy.
+- `redirect_url` **is** echoed back, and only when one was stored — the key is absent otherwise. It is read back off the saved session rather than off your request, so its presence is confirmation the value was actually recorded.
 - `settlement_mode` and `settlement_chain` are echoed back, resolved — you see the account default when you sent nothing.
 
 **`settlement_chain` is echoed on fiat sessions too, and means nothing there.** Nothing is forwarded when the session settles in local currency. `settlement_mode` in the same response is the only thing that tells you whether the chain is live or inert, so branch on the mode, never on the presence of a chain.
@@ -132,6 +136,10 @@ Errors:
 | `400` | `{ "error": "Amount exceeds maximum of $50,000 USDC per checkout." }` | Above the per-session ceiling. The figure in the message is the configured ceiling — read it from the message rather than hardcoding it. |
 | `400` | `{ "error": "Invalid settlement_mode. Must be 'fiat' or 'usdc'." }` | `settlement_mode` was present but not one of the two. |
 | `400` | `{ "error": "Invalid settlement_chain. Must be one of BASE, ARB, AVAX, OP, ETH, MATIC." }` | `settlement_chain` was present but not one of the six, including a correct name in the wrong case. |
+| `400` | `{ "error": "redirect_url must use https (http is allowed only for localhost)." }` | Plain `http` on any host other than `localhost` or `127.0.0.1`, or a scheme that is not http or https at all. |
+| `400` | `{ "error": "redirect_url must be an absolute URL, e.g. https://example.com/thanks." }` | A relative path, or anything that does not parse as a URL. |
+| `400` | `{ "error": "redirect_url must not contain a username or password." }` | Credentials embedded in the URL. |
+| `400` | `{ "error": "redirect_url must be at most 2048 characters." }` | Over the length cap. |
 | `502` | Provisioning failure on the destination chain. | **Nothing was created.** A USDC session on a chain the account has not used before provisions a destination wallet during the create call, and this is that step failing. Deliberately surfaced here rather than letting the session succeed and quietly fail to forward later. Retry. |
 | `401` / `403` | See `references/authentication.md`. | Key missing, invalid, or not permitted. |
 | `429` | Creation cap or general limit. | See [Requirements](#requirements). |
@@ -157,6 +165,7 @@ Response `200`:
   "created_at": "2026-07-31T10:30:00.000Z",
   "payment_method": "crypto",
   "awaiting_onramp": false,
+  "redirect_url": "https://yourstore.com/thanks?order=1183&session_id=3f9c2a71-5e64-4b8d-9a02-71c5d8e3b410&status=pending",
   "settlement_chain": "ARB",
   "forward": { "status": "not_started", "chain": "ARB" },
   "merchant": {
@@ -172,6 +181,7 @@ Response `200`:
 | `status` | One of the lifecycle strings — see [Session lifecycle](#session-lifecycle). |
 | `description` | Whatever was set at creation, or `null`. |
 | `payment_method` | `crypto` or `mpesa`. **Defaults to `crypto`** — it is never `null`, and it stays `crypto` until an M-Pesa payment is actually started on the session. |
+| `redirect_url` | The fully built return URL, with `session_id` and `status` already appended, or `null` when the session was created without one. The `status` inside it always matches the `status` field above, so it is safe to read either. |
 | `awaiting_onramp` | `true` only while an M-Pesa prompt is in flight on a still-`pending` session. This is the "check your phone" signal. It goes back to `false` if the prompt fails and the session reverts to being payable in stablecoin. |
 | `merchant` | Display info for rendering your own page, or `null` if the account record could not be loaded. `accepted_chains` is the set of chain codes this account accepts stablecoin deposits on — see [What the customer can pay with](#what-the-customer-can-pay-with). An empty array or a `null` here means the account predates the setting; read it as "all supported chains", not "none". |
 | `settlement_chain` | Where the proceeds end up. **USDC-settling sessions only.** |
@@ -434,6 +444,42 @@ What happens when the amount does *not* match depends on how many sessions are o
 - **You will not see this in any response.** Contact Minisend with the transaction hash to have the payment attributed.
 
 So **do not reconcile on `amount_usdc`** — booking it as revenue on `checkout.completed` books money that may never have arrived. Reconcile on `amount_received_usdc`, treat `amount_matched: false` as needing review, and keep the number of simultaneously open sessions per account low so an off-amount payment resolves automatically instead of parking.
+
+## Sending the customer back to your site
+
+Set `redirect_url` when you create the session and the hosted page hands the customer back to you once the payment is done. Without it they finish on the Minisend page and stop there, which is fine for a payment link on a counter and wrong for a store that has its own order confirmation to show.
+
+**Only the authenticated create path can set one.** `POST /api/merchant/pay` — the payment-link path — has no such field, so a link-driven session always ends on the hosted page.
+
+### What the customer's browser lands on
+
+Two parameters are appended to whatever you supplied, and the rest of your query string is left exactly as you wrote it:
+
+| Parameter | Value |
+| --- | --- |
+| `session_id` | The session this return came from. |
+| `status` | `completed`, `failed`, or `expired`. |
+
+So `https://yourstore.com/thanks?order=1183` becomes:
+
+```
+https://yourstore.com/thanks?order=1183&session_id=3f9c2a71-...&status=completed
+```
+
+If you already put a `session_id` or a `status` of your own in the URL, **yours is kept and nothing is appended over it.** Pick different parameter names if you want both.
+
+### When it fires
+
+- **`completed`** — the customer is sent automatically, a few seconds after the success screen appears. Reaching for the receipt on that screen cancels the automatic return; a button to go back stays available either way.
+- **`failed` and `expired`** — the link back is shown but never taken automatically. The customer may still want to retry or read what happened, and moving them off the page mid-thought is worse than letting them choose.
+
+Because the automatic return only happens on `completed`, and `completed` is the same state that emits `checkout.completed`, the customer's return and your webhook cannot disagree about whether the payment settled.
+
+### `status=completed` is not proof of payment
+
+It is a query parameter. Anyone can type it into a browser, and a customer who abandons the payment can still arrive at your confirmation page by editing the URL.
+
+Render the page off it if you like — that is what it is for — but **fulfilment belongs to the webhook, or to a server-side `GET /api/merchant/checkout/{session_id}` before you release anything.** Treating the parameter as authoritative is the one way this feature can cost you money.
 
 ## Session lifecycle
 
@@ -733,4 +779,6 @@ export function handleWebhook(rawBody: string, signature: string) {
 - **Retrying an M-Pesa prompt through the 409 cooldown.** It is a double-charge guard. Surface the message and wait.
 - **Hardcoding the six chain codes.** Read `accepted_chains` from the session — a deposit on a chain the account does not accept will not settle it.
 - **Relying on `external_id` from a payment-link session.** The public create path does not accept one. Use the authenticated endpoint when you need to reconcile.
+- **Treating the `status` parameter on your return URL as proof of payment.** It is a query parameter a customer can type. Confirm with the webhook or a server-side status read before releasing anything.
+- **Expecting `redirect_url` on a payment-link session.** Only the authenticated create path accepts one.
 - **Assuming the two amount ceilings match.** The payment-link path caps at 10,000 USDC; the authenticated create path's ceiling is higher and is reported in its own error message.

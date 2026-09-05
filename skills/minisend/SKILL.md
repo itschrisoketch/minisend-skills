@@ -49,6 +49,7 @@ Full detail — scopes, the access-gate 403 model, rate limits, error bodies, an
 - `refund_address` is mandatory on every off-ramp order.
 - **No quote is a lock.** The quote endpoints reserve nothing and the order is priced fresh at creation, so read the priced fields back from the response you actually act on — never compute or hardcode them.
 - Webhook signatures verify over the raw request body, not a re-serialized copy of the parsed JSON.
+- A customer returning to your site from checkout arrives with `status=completed` in the URL. That is a query parameter, not evidence — confirm with the webhook or a server-side status read before releasing anything.
 
 ## Reference map
 

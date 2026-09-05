@@ -109,7 +109,7 @@ Fields: `account_name`, `institution`, `account_number`; optional `bank_name`.
 }
 ```
 
-`institution` is the bank's institution code. If you send `bank_code` instead of `institution`, it is accepted as a synonym — `institution` is read first, `bank_code` is the fallback. Any `method` you send on an NGN recipient is ignored; the order is always recorded as `BANK_TRANSFER`.
+`institution` is the bank's institution code. **Get it from `GET /api/offramp/institutions`** — the codes are opaque, a wrong one fails the order, and there is no way to derive one from a bank's name. See `references/offramp.md`. If you send `bank_code` instead of `institution`, it is accepted as a synonym — `institution` is read first, `bank_code` is the fallback. Any `method` you send on an NGN recipient is ignored; the order is always recorded as `BANK_TRANSFER`.
 
 ## Phone numbers
 

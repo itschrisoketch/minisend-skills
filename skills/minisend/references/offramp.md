@@ -164,6 +164,39 @@ A body that isn't valid JSON returns `400 { "error": "Invalid JSON body." }`; a 
 
 Whether a failure here would actually block an order depends on the destination — bank destinations are hard-gated, mobile/till/paybill lookups are best-effort and never block. `references/recipients.md` has the full table; read it before you decide to treat this endpoint's result as authoritative.
 
+### `GET /api/offramp/institutions`
+
+**Requires an `ms_live_` key with the `offramp` scope.** Lists the banks and mobile money providers an NGN recipient can hold, with the code each one is identified by.
+
+`recipient.institution` on an NGN order is an opaque code with no way to guess it, and a wrong code fails the order. Read the list rather than hardcoding one.
+
+Query:
+
+| Parameter | Required | Notes |
+| --- | --- | --- |
+| `currency` | no | Defaults to `NGN`, which is currently the only accepted value. |
+
+Response `200`:
+
+```json
+{
+  "currency": "NGN",
+  "count": 0,
+  "institutions": [
+    { "code": "GTBINGLA", "name": "Guaranty Trust Bank", "type": "bank" }
+  ]
+}
+```
+
+The response carries `Cache-Control: private, max-age=3600`. The list is near-static and identical for every caller, so cache it rather than calling this before every order.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `400` | `{ "error": "No institution list for KES. Only NGN identifies a recipient by institution code; other currencies use recipient.method with a phone number." }` | A currency that does not use institution codes. **This is not a gap to work around** — KES, GHS, and UGX recipients are identified by `method` plus a phone number, and no list exists for them. |
+| `502` | `{ "error": "Could not load the institution list. Try again shortly." }` | Upstream lookup failed. Retry. |
+| `503` | `{ "error": "Off-ramp API is not available." }` | Off-ramp is switched off for the deployment. |
+| `401` / `403` | See `references/authentication.md`. | Key missing, invalid, or without the `offramp` scope. |
+
 ### `POST /api/offramp/orders`
 
 Creates the order and tells you where to send USDC.
