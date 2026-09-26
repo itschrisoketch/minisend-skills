@@ -59,21 +59,39 @@ The largest category. Grouped by where it comes from.
 
 Recipient-object messages — `Missing recipient object.`, `recipient.account_name is required.`, the per-method required-field messages, the phone-format message, the mobile-network message — are listed verbatim in `references/recipients.md`. They are stable enough to fix a payload from without another round trip.
 
-### On-ramp
+### On-ramp — KES
 
 | Body | Cause |
 | --- | --- |
-| `{ "error": "address is required and must be a valid 0x EVM address (Base USDC release destination)." }` | Missing or malformed release address — **your own** address. |
+| `{ "error": "address is required and must be a valid 0x EVM address (Base USDC release destination)." }` | Missing or malformed release address — **your own** address. Shared with NGN. |
 | `{ "error": "phone is required." }` | No `phone`. |
 | `{ "error": "Please enter a valid Kenyan phone number." }` | Not a recognisable Kenyan mobile shape. |
 | `{ "error": "This Kenyan number doesn't look right. Please check it and try again." }` | Right shape, prefix not allocated to a known carrier. |
 | `{ "error": "Only Safaricom and Airtel numbers are supported." }` | A real Kenyan number on a carrier with no mobile-money route. |
-| `{ "error": "Only KES (M-Pesa) onramp is supported." }` | `currency` was not `KES`. |
+| `{ "error": "currency must be KES (M-Pesa) or NGN (bank transfer)." }` | `currency` was something other than `KES` or `NGN`. Shared with NGN. |
 | `{ "error": "Provide exactly one of amount_usdc or amount_kes (positive number)." }` | Both amounts, neither, or a non-positive one. |
 | `Amount converts to only <n> KES net — M-Pesa onramp requires at least 100 KES. Try a larger amount.` | Below the net floor. **This is a net figure**, not the charge the customer sees. |
 | `After the fee, only <n> KES converts to USDC — M-Pesa onramp requires at least 100 KES net. Try a larger amount.` | Same floor, from the `amount_kes` direction. |
 | `Amount converts to <n> KES, outside the supported M-Pesa range of 20–250,000 KES per transaction.` | Outside the per-transaction band. |
 | `amount_kes must be within the supported M-Pesa range of 20–250,000 KES per transaction.` | Same band, from the `amount_kes` direction. |
+
+### On-ramp — NGN
+
+| Body | Cause |
+| --- | --- |
+| `{ "error": "Provide exactly one of amount_ngn or amount_usdc (positive number)." }` | Both amounts, neither, or a non-positive one. |
+| `{ "error": "amount_ngn must be a positive number with at most 2 decimal places." }` | `amount_ngn` failed the shape check. |
+| `{ "error": "refund_account is required…" }` | No `refund_account` object. **Required on every NGN order** — it's the payer's own bank account, used to send their naira back if the order fails after they've paid. |
+| `{ "error": "refund_account.institution is required…" }` | Missing bank code. Get one from `GET /api/onramp/institutions?currency=NGN`. |
+| `{ "error": "refund_account.account_number must be a 10-digit Nigerian account number." }` | `account_number` isn't a 10-digit NUBAN. |
+| Amount-band messages — see `references/onramp.md` (Limits). | Below 1 USDC, or the order would charge over NGN 1,000,000. |
+| `{ "error": "currency must be KES (M-Pesa) or NGN (bank transfer)." }` | Shared with KES, above. |
+| `422 { "error": "refund_account could not be verified. Check the bank code and account number." }` | The bank code and account number don't resolve to a real account. **Nothing was created** — fix the details and call again. |
+| `422 { "error": "refund_account.account_name is required: this bank does not return account names." }` | The bank has no name lookup for that account. Supply `refund_account.account_name` and retry. |
+| `502 { "error": "Failed to create the bank transfer account. Create a new order to retry." }` | The order exists but never got a usable virtual account. Retry with a **new** `Idempotency-Key` — replaying the old one returns the same dead order and mints nothing. |
+| `502 { "error": "The price moved while creating this order." }` | The rate shifted between pricing and account issuance. Same retry rule as above. |
+
+**NGN's per-order rate limit is per `refund_account`, not per phone number** — 5 orders per payer bank account per 10 minutes, across every account on the platform, the NGN analogue of KES's per-phone cap. See `references/authentication.md` and `references/onramp.md` (Limits).
 
 ### Checkout
 

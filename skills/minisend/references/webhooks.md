@@ -287,15 +287,17 @@ Field names differ from the order object — `payout_currency` (not `currency`),
 | --- | --- |
 | `onramp.completed` | The local currency was collected. The order is `completed`. |
 | `onramp.released` | The on-chain USDC transfer to `release_address` was recorded. **Carries `release_tx_hash` and does not change the order's status.** |
-| `onramp.failed` | The payment prompt did not produce a payment. The order is `failed`. |
+| `onramp.failed` | The payment did not produce a completed order. The order is `failed`. |
 | `onramp.expired` | The order window closed unpaid. Delivered whether the sweep or a read expires the order. |
 
-Two on-ramp specifics that have no counterpart in the other products:
+On-ramp has two rails, KES (an M-Pesa/Airtel prompt) and NGN (a bank transfer to a virtual account), and they share this exact event catalogue and payload shape — see `references/onramp.md` for the full rail-by-rail detail. Two on-ramp specifics that have no counterpart in the other products:
 
-- **`onramp.released` is not a status change.** It is a money-arrived signal, delivered from a callback separate from the one that completes the order. **No ordering with `onramp.completed` is guaranteed** — it can arrive first, and its arrival does not imply you have already processed `onramp.completed`.
+- **`onramp.released` is not a status change.** It is a money-arrived signal, delivered from a callback separate from the one that completes the order. **No ordering with `onramp.completed` is guaranteed** — it can arrive first, and its arrival does not imply you have already processed `onramp.completed`. The gap between the two tends to be shorter on NGN than on KES, but neither rail guarantees an order.
 - **`onramp.completed` can follow `onramp.expired` or `onramp.failed`.** Only `completed` is immutable on an on-ramp order; a late confirmation that the customer really was charged moves an `expired` or `failed` order to `completed` and fires `onramp.completed`. This is deliberate.
 
 So a single on-ramp order can legitimately produce two, or even three, different events.
+
+**There is no event for the NGN-only `deposit_received` status.** An order can sit there — naira received, USDC release in progress — with nothing delivered to your webhook URL; poll `GET /api/onramp/orders/{order_id}` if you want to reflect that state in your UI before the order reaches a terminal one.
 
 ```json
 {
@@ -304,6 +306,7 @@ So a single on-ramp order can legitimately produce two, or even three, different
   "external_reference": "invoice-4471",
   "status": "completed",
   "currency": "KES",
+  "payment_method": "mpesa",
   "amount_usdc": 10,
   "amount_local": 0,
   "fee": 0,
@@ -318,10 +321,10 @@ So a single on-ramp order can legitimately produce two, or even three, different
 }
 ```
 
-Always present: `event`, `order_id`, `status`, `currency`, `amount_usdc`, `amount_local`, `fee`, `exchange_rate`, `customer_phone`, `mobile_network`, `release_address`, `created_at`.
+Always present: `event`, `order_id`, `status`, `currency`, `payment_method`, `amount_usdc`, `amount_local`, `fee`, `exchange_rate`, `customer_phone`, `mobile_network`, `release_address`, `created_at`.
 Omitted when unset: `external_reference`, `receipt_number`, `release_tx_hash`, `failure_reason`, `completed_at`.
 
-`failure_reason` appears on `onramp.failed`; `release_tx_hash` appears on `onramp.released` and on anything delivered after the release was recorded. The payload has no `release_chain`, `release_asset`, or `expires_at`. Full field meanings are in `references/onramp.md`.
+`payment_method` is `"mpesa"` or `"bank_transfer"` — names the rail. On an NGN event, `currency` is `"NGN"`, `payment_method` is `"bank_transfer"`, and **`customer_phone` and `mobile_network` are present but `null`** rather than omitted, since neither has meaning on the bank-transfer rail. `failure_reason` appears on `onramp.failed`; on NGN it's a closed set of values (`refunded_to_payer`, `deposit_not_settled`, `cancelled`, `provision_failed`, `persist_failed`, `price_moved`) rather than KES's free-text `stk_failed: <detail>` — `references/onramp.md` explains what each means and which one (`deposit_not_settled`) means the customer already paid and should not be asked to pay again. `release_tx_hash` appears on `onramp.released` and on anything delivered after the release was recorded. The payload has no `release_chain`, `release_asset`, or `expires_at`. Full field meanings are in `references/onramp.md`.
 
 ### Checkout
 

@@ -12,7 +12,7 @@ No, for any of the four products. The wallet API once recognised a `wsk_test_` p
 
 **Off-ramp** — you already hold USDC and want to pay someone else out in local currency, naming a different recipient per order. Use it when you're the one initiating a payout to a third party. See `references/offramp.md`.
 
-**On-ramp** — you charge a customer's phone in local currency and receive USDC yourself. Use it when you want stablecoins in exchange for a local-currency charge, and nobody downstream gets paid out in local currency. See `references/onramp.md`.
+**On-ramp** — you charge a customer in local currency, via an M-Pesa/Airtel prompt (KES) or a bank transfer to a virtual account (NGN), and receive USDC yourself. Use it when you want stablecoins in exchange for a local-currency charge, and nobody downstream gets paid out in local currency. See `references/onramp.md`.
 
 Provisioning wallet addresses for your own users is a separate product again, with its own key namespace — see `references/wallets.md`.
 
@@ -34,11 +34,11 @@ For checkout, USDC on Base always works, and always settles. An account can also
 
 ## Which countries and payout methods are supported?
 
-Off-ramp pays out KES (mobile money, till, paybill, or bank transfer — Kenya), GHS (mobile money — Ghana), UGX (mobile money — Uganda), and NGN (bank transfer only — Nigeria). On-ramp only collects KES, via M-Pesa and Airtel Money in Kenya. See `references/recipients.md` for the full method matrix and `references/onramp.md` for on-ramp's KES-only scope.
+Off-ramp pays out KES (mobile money, till, paybill, or bank transfer — Kenya), GHS (mobile money — Ghana), UGX (mobile money — Uganda), and NGN (bank transfer only — Nigeria). On-ramp collects KES, via M-Pesa and Airtel Money in Kenya, or NGN, via a bank transfer to a virtual account — nothing else, on either product. See `references/recipients.md` for the full off-ramp method matrix and `references/onramp.md` for on-ramp's two rails.
 
 ## What are the limits per currency and per transaction?
 
-Off-ramp has a 0.5–50,000 USDC per-order band plus a local-currency band per currency (KES, GHS, UGX are rejected pre-order if outside it; NGN isn't pre-checked). On-ramp's floor is 100 KES *net* — not the gross the customer is charged — up to 250,000 KES. Checkout's payment-link path caps at $10,000 USDC; the authenticated create path has a higher ceiling that the error response reports directly rather than a fixed number to hardcode. Quote first rather than precomputing bounds, since the bands are in local currency and move with the rate. See `references/offramp.md` (Limits), `references/onramp.md` (Limits), and `references/checkout.md` (`POST /api/merchant/checkout`).
+Off-ramp has a 0.5–50,000 USDC per-order band plus a local-currency band per currency (KES, GHS, UGX are rejected pre-order if outside it; NGN isn't pre-checked). On-ramp's KES floor is 100 KES *net* — not the gross the customer is charged — up to 250,000 KES; its NGN floor is 1 USDC out, up to NGN 1,000,000 per order. Checkout's payment-link path caps at $10,000 USDC; the authenticated create path has a higher ceiling that the error response reports directly rather than a fixed number to hardcode. Quote first rather than precomputing bounds, since the bands are in local currency and move with the rate. See `references/offramp.md` (Limits), `references/onramp.md` (Limits), and `references/checkout.md` (`POST /api/merchant/checkout`).
 
 ## How long does settlement take, and what determines it?
 
@@ -46,7 +46,7 @@ There's no fixed duration to plan around, and it differs by product and path. On
 
 ## Who pays the fee, and what will the recipient actually receive?
 
-The model differs per product and no figures are quoted here — contact `info@minisend.xyz` for current rates. On off-ramp, quote `recipient_amount` and show that to your user; it's the authoritative pre-send figure. On on-ramp the fee is added on top of what converts to USDC, so the customer's phone is always prompted for more than your target `amount_usdc`. On checkout, the payment-link path grosses the charge up so the fee rides on top; the authenticated-create path takes the fee out of the payout side instead. See `references/offramp.md` (Fees), `references/onramp.md` (Fees), and `references/checkout.md` (Settlement).
+The model differs per product and no figures are quoted here — contact `info@minisend.xyz` for current rates. On off-ramp, quote `recipient_amount` and show that to your user; it's the authoritative pre-send figure. On on-ramp the fee is added on top of what converts to USDC on both rails, so the customer is always asked for more — on their phone (KES) or in the bank-transfer amount (NGN) — than your target `amount_usdc`. On checkout, the payment-link path grosses the charge up so the fee rides on top; the authenticated-create path takes the fee out of the payout side instead. See `references/offramp.md` (Fees), `references/onramp.md` (Fees), and `references/checkout.md` (Settlement).
 
 ## Why did the recipient receive less than my quoted amount?
 

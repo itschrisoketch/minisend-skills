@@ -1,6 +1,6 @@
 {
   "name": "@minisend/skill",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Minisend integration skill for coding agents \u2014 accept stablecoins, pay out local currency across Africa.",
   "type": "module",
   "license": "MIT",

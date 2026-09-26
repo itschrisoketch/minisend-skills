@@ -25,7 +25,7 @@ already exists.
 | Product | What it does |
 | --- | --- |
 | **Off-ramp** | Send USDC, Minisend pays out KES, NGN, GHS, or UGX to a phone, till, paybill, or bank account |
-| **On-ramp** | Collect KES by M-Pesa prompt, receive USDC at your own wallet address |
+| **On-ramp** | Collect KES by M-Pesa prompt or NGN by bank transfer, receive USDC at your own wallet address |
 | **Wallets** | Create and look up wallets programmatically |
 | **Checkout** | Take a payment and settle it to a local bank or mobile money account |
 
