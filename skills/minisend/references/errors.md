@@ -174,7 +174,7 @@ Off-ramp deposit submission and the checkout M-Pesa prompt are the only places t
 
 | Body | Cause | Fix |
 | --- | --- | --- |
-| `{ "error": "This order settles automatically once funds arrive at deposit_address. No hash submission needed for this currency." }` | You called the deposit endpoint on an NGN order. | Do not submit a hash on the NGN path. Branch on the payout currency. |
+| `{ "error": "This order settles automatically once funds arrive at deposit_address, so there is no hash to submit. Send exactly total_deposit_usdc (deposit_submission_required is false on this order)." }` | You called the deposit endpoint on an automatic-path order (every NGN order, and some KES M-Pesa phone and till orders). | Nothing to do: the deposit is detected on its own. Branch on the order's `deposit_submission_required`, not on the payout currency. |
 | `{ "error": "Order is <status> and can no longer be paid." }` | The order has moved past `pending`. The live status is interpolated. | Read the order; act on its actual status. |
 | `{ "error": "Order expired before a deposit was submitted. Create a new order." }` | The deposit window closed. The order is flipped to `expired` by this call, which also delivers `offramp.expired`. | Create a new order. |
 | `{ "error": "This transaction hash was already used for another order." }` | One transfer cannot pay two orders. | Send a separate transfer per order. |
@@ -197,7 +197,8 @@ Two of these, and **they behave oppositely on retry.**
 
 | Body | Endpoint | Retryable? |
 | --- | --- | --- |
-| `{ "valid": false, "error": "Recipient validation failed. Confirm the account details and try again." }` on `validate-account`, or `{ "error": "Recipient validation failed. Confirm the account details and try again." }` on quote/create | Off-ramp quote, validate-account, order creation | **No order was created.** Fix the recipient details and call again. Only hard-gated destinations (NGN bank, KES `BANK_TRANSFER`) can produce this — see `references/recipients.md`. |
+| `{ "valid": false, "error": "Recipient validation failed. Confirm the account details and try again." }` on `validate-account`, or `{ "error": "Recipient validation failed. Confirm the account details and try again." }` on quote/create | Off-ramp quote, validate-account, order creation | **No order was created.** Fix the recipient details and call again. Only hard-gated destinations (NGN bank, KES `BANK_TRANSFER`, a KES M-Pesa phone or till on the automatic deposit path) can produce this — see `references/recipients.md`. |
+| `502 { "error": "Could not verify the recipient right now. Nothing was created; retry shortly." }` on create, or `502 { "error": "Could not verify the recipient right now. Retry shortly." }` on quote and `validate-account` | Off-ramp quote, validate-account, order creation | **Yes, unchanged.** The account check could not be completed; it is not a judgement on the recipient. No order was created. |
 | `{ "error": "Payment verification failed: <detail>. Confirm the hash, amount, and chain, then retry." }` | `POST /api/offramp/orders/{order_id}/deposit` | **Yes.** The order stays `pending` and the claim on it is released, so a corrected hash on the same order goes through. |
 
 ## 429 — rate limited

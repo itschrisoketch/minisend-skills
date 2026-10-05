@@ -183,11 +183,14 @@ An unrecognised network is rejected with the valid list in the message:
 | --- | --- | --- |
 | NGN bank account | **hard** | An unverifiable account returns 422 and no order is created. A valid account with no name available still passes — you just get no `recipient_name`. |
 | KES `BANK_TRANSFER` | **hard** | Requires a completed lookup *and* a non-empty registered name. Either missing → 422, no order created. |
+| KES `MOBILE` (Safaricom) or `BUY_GOODS` on the automatic deposit path | **hard** | The number is checked before the order exists. One that cannot receive the payout → 422, no order created. A valid number with no name on record still passes, using your `account_name`. |
 | `MOBILE` | **soft** | Best-effort. A name is returned when the lookup succeeds; a failed or unavailable lookup never blocks the order. |
 | `BUY_GOODS` | **soft** | Same as `MOBILE`. |
 | `PAYBILL` | **soft** | Same as `MOBILE`. |
 
-The practical consequence: **for mobile, till, and paybill destinations, a successful order creation is not proof the number exists.** Name resolution for these is explicitly best-effort and its reliability varies, so a typo in a phone number can survive order creation and only surface as a failed payout. Confirm the number with your own user; don't rely on validation to catch it.
+Which deposit path a KES M-Pesa phone or till order takes is decided when it is created (see `references/offramp.md`, The two deposit paths), so the same number can be hard-gated on one order and soft on the next. `validate-account` and `quote` check it the way an order created at that moment would.
+
+The practical consequence: **for mobile, till, and paybill destinations on the hash-submission path, a successful order creation is not proof the number exists.** Name resolution for these is explicitly best-effort and its reliability varies, so a typo in a phone number can survive order creation and only surface as a failed payout. Confirm the number with your own user; don't rely on validation to catch it.
 
 For bank destinations the opposite holds — validation is a real gate, and a 422 there means the account genuinely could not be verified.
 
@@ -237,7 +240,7 @@ And one from validation rather than parsing:
 
 | Message | Status | Cause |
 | --- | --- | --- |
-| `Recipient validation failed. Confirm the account details and try again.` | 422 | A hard-gated destination (NGN bank, KES `BANK_TRANSFER`) could not be verified. No order was created. |
+| `Recipient validation failed. Confirm the account details and try again.` | 422 | A hard-gated destination (NGN bank, KES `BANK_TRANSFER`, or a KES M-Pesa phone or till on the automatic deposit path) could not be verified. No order was created. |
 
 ## How recipient fields come back
 
@@ -257,6 +260,6 @@ The order response echoes a trimmed projection of the recipient, not everything 
 
 Exactly five keys appear — `account_name`, `method`, `account_number`, `institution`, and `phone` — and **all five are always present.** The ones that don't apply to the method carry `null`; they are not dropped. The KES mobile order above still has `account_number` and `institution` as `null`, and an NGN bank order still has `phone` as `null`.
 
-So test them for truthiness or against `null`. `'phone' in order.recipient` is `true` on every order regardless of method and will not tell you anything, and `=== undefined` never matches. This matches the order object generally — see the null-versus-absent note in `references/offramp.md`, where `sender_fee_usdc` and `transaction_fee_usdc` are the only genuinely absent fields.
+So test them for truthiness or against `null`. `'phone' in order.recipient` is `true` on every order regardless of method and will not tell you anything, and `=== undefined` never matches. This matches the order object generally — see the null-versus-absent note in `references/offramp.md`, where `sender_fee_usdc` and `transaction_fee_usdc` (absent on hash-submission orders) are the only genuinely absent fields.
 
 `till`, `paybill`, `paybill_account`, `bank_code`, and `bank_name` are stored and used for the payout but are never echoed back at all — keep your own copy if you need to display them.

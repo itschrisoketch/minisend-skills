@@ -42,7 +42,7 @@ Off-ramp has a 0.5–50,000 USDC per-order band plus a local-currency band per c
 
 ## How long does settlement take, and what determines it?
 
-There's no fixed duration to plan around, and it differs by product and path. On off-ramp, the KES/GHS/UGX path doesn't move past `pending` until *you* submit the deposit hash — the clock is on you, not Minisend; the NGN path detects the deposit automatically. For a stablecoin-paid checkout session, once the deposit is accounted for the session moves to `settling` and finishes when the payout provider confirms; an M-Pesa-paid checkout session skips `settling` entirely and completes directly once the collection is confirmed. On-ramp has no `settling` state at all — an order goes straight from `pending` to an end state, and the on-chain release (`release_tx_hash`) is recorded independently of that transition, sometimes before it and sometimes after. Wait for the webhook rather than assuming a duration; see `references/offramp.md` (The two deposit paths), `references/checkout.md` (Session lifecycle), and `references/onramp.md` (Order lifecycle).
+There's no fixed duration to plan around, and it differs by product and path. On off-ramp, an order with `deposit_submission_required: true` doesn't move past `pending` until *you* submit the deposit hash — the clock is on you, not Minisend; an order with `false` detects the deposit automatically. For a stablecoin-paid checkout session, once the deposit is accounted for the session moves to `settling` and finishes when the payout provider confirms; an M-Pesa-paid checkout session skips `settling` entirely and completes directly once the collection is confirmed. On-ramp has no `settling` state at all — an order goes straight from `pending` to an end state, and the on-chain release (`release_tx_hash`) is recorded independently of that transition, sometimes before it and sometimes after. Wait for the webhook rather than assuming a duration; see `references/offramp.md` (The two deposit paths), `references/checkout.md` (Session lifecycle), and `references/onramp.md` (Order lifecycle).
 
 ## Who pays the fee, and what will the recipient actually receive?
 
@@ -50,7 +50,7 @@ The model differs per product and no figures are quoted here — contact `info@m
 
 ## Why did the recipient receive less than my quoted amount?
 
-On the off-ramp KES/GHS/UGX path, the order is priced again the moment the payout actually releases — so the settled economics on `offramp.completed` (`amount_local` minus `fee`) can differ from the `recipient_amount` you saw at quote or order-creation time. `recipient_amount` isn't stored on the order or included in the webhook, so it's never the number to reconcile against after the fact. See `references/offramp.md` (Which figure to show, and when).
+On the off-ramp hash-submission path, the order is priced again the moment the payout actually releases — so the settled economics on `offramp.completed` (`amount_local` minus `fee`) can differ from the `recipient_amount` you saw at quote or order-creation time. `recipient_amount` isn't stored on the order or included in the webhook, so it's never the number to reconcile against after the fact. See `references/offramp.md` (Which figure to show, and when).
 
 ## What happens when a payout fails? Where do the funds go?
 

@@ -21,31 +21,41 @@ If off-ramp is switched off platform-wide, every endpoint here returns `503 { "e
 
 1. **Quote** — `POST /api/offramp/quote`. Get the rate and, more importantly, `recipient_amount`: the pre-send figure to show your user, being what the recipient nets *at the quoted rate*. It is not the settled figure — see [Which figure to show, and when](#which-figure-to-show-and-when).
 2. **Validate the account** (optional but recommended) — `POST /api/offramp/validate-account`. Resolves the recipient's registered name so you can confirm it with your user before money moves.
-3. **Create the order** — `POST /api/offramp/orders`. Returns `deposit_address`, `total_deposit_usdc`, `expires_at`, and a human-readable `instructions` string.
+3. **Create the order** — `POST /api/offramp/orders`. Returns `deposit_address`, `total_deposit_usdc`, `deposit_submission_required`, `expires_at`, and a human-readable `instructions` string.
 4. **Send USDC on Base** from your own wallet to `deposit_address`, for exactly `total_deposit_usdc`.
-5. **Submit the transaction hash** — `POST /api/offramp/orders/{order_id}/deposit`. **Required for KES, GHS, and UGX. Not used for NGN.** See below.
+5. **Submit the transaction hash** — `POST /api/offramp/orders/{order_id}/deposit`. **Only when the order's `deposit_submission_required` is `true`.** See below.
 6. **Receive the webhook** — `offramp.completed`, `offramp.failed`, or `offramp.expired` at your configured webhook URL. Or poll `GET /api/offramp/orders/{order_id}`.
 
 ## The two deposit paths
 
-This is the one thing that most often breaks an off-ramp integration. **Which path you're on is decided by the payout currency, and the two behave differently after you send the USDC.**
+This is the one thing that most often breaks an off-ramp integration. **Every order is on one of two deposit paths, the order tells you which in `deposit_submission_required`, and the two behave differently after you send the USDC.**
 
-| | KES, GHS, UGX | NGN |
+| | Hash submission (`deposit_submission_required: true`) | Automatic (`deposit_submission_required: false`) |
 | --- | --- | --- |
 | `deposit_address` | A shared address, reused across orders | A single-use address, unique to this order |
 | Amount to send | `total_deposit_usdc` (equals `amount_usdc`) | `total_deposit_usdc` (`amount_usdc` plus deposit-side fees — **larger** than `amount_usdc`) |
 | After you send | **You must submit the transaction hash** to `POST /api/offramp/orders/{order_id}/deposit` | Nothing. The deposit is detected automatically |
 | If you skip step 5 | Nothing happens. The order expires unpaid | N/A — there is no step 5 |
+| If you send less than `total_deposit_usdc` | The hash is rejected with a `422`; send the rest and resubmit | **Not credited.** The deposit goes back to `refund_address` |
 | Order moves to `settling` | When your submitted hash is accepted | When the deposit is detected |
 
-Your code has to branch on this. The safest branch key is the payout currency you already know — NGN on one side, KES/GHS/UGX on the other — and the order response corroborates it: only an NGN order carries `sender_fee_usdc` and `transaction_fee_usdc`, and the `instructions` string spells out which of the two procedures applies.
+Which path an order takes:
 
-### Path A — KES, GHS, UGX: send, then submit the hash
+| Payout | Path |
+| --- | --- |
+| NGN (any recipient) | Always automatic |
+| GHS, UGX | Always hash submission |
+| KES `PAYBILL`, KES `BANK_TRANSFER`, KES `MOBILE` on Airtel | Always hash submission |
+| KES `MOBILE` on Safaricom, KES `BUY_GOODS` (till) | **Either.** Decided when the order is created, and can differ between two otherwise identical orders |
+
+**Branch on `deposit_submission_required`, never on the payout currency.** A KES M-Pesa order can come back on either path, so code that hardcodes "KES means submit the hash" will send the wrong amount to a single-use address (and be refunded), or submit a hash that gets a `409`. Read the flag from every order response. The quote response carries the same flag, so you can show the right total before creating anything, and an order on the automatic path is the one that carries `sender_fee_usdc` and `transaction_fee_usdc`.
+
+### Path A — hash submission: send, then submit the hash
 
 Because `deposit_address` is shared across orders, Minisend cannot tell your transfer apart from anyone else's. Your submitted transaction hash is what ties the transfer to your order. Until you submit it, nothing at all happens.
 
 ```
-create order → send exactly amount_usdc USDC (Base) to deposit_address
+create order → send exactly total_deposit_usdc USDC (Base) to deposit_address
              → POST /api/offramp/orders/{order_id}/deposit { "transaction_hash": "0x…" }
              → status becomes settling → webhook
 ```
@@ -54,7 +64,7 @@ The `instructions` string returned on creation says exactly this, with your orde
 
 > Send exactly `<amount_usdc>` USDC (Base) to deposit_address from your own wallet, then submit the transaction hash via POST /api/offramp/orders/`<order_id>`/deposit before expires_at.
 
-### Path B — NGN: send and wait
+### Path B — automatic: send and wait
 
 `deposit_address` is minted for this order alone and is watched for you. Sending the USDC is the whole job.
 
@@ -63,16 +73,16 @@ create order → send exactly total_deposit_usdc USDC (Base) to deposit_address
              → deposit detected → status becomes settling → webhook
 ```
 
-`total_deposit_usdc` on this path is **larger** than `amount_usdc` — it includes the deposit-side fees returned as `sender_fee_usdc` and `transaction_fee_usdc`. Send `amount_usdc` and the order will not fund correctly. Always send `total_deposit_usdc`.
+`total_deposit_usdc` on this path is **larger** than `amount_usdc` — it includes the deposit-side fees returned as `sender_fee_usdc` and `transaction_fee_usdc`. Send exactly `total_deposit_usdc`: a smaller transfer is not credited and is returned to `refund_address`. The window is short (a few minutes), so create the order only when you are ready to send.
 
 The `instructions` string on this path reads:
 
-> Send exactly `<total_deposit_usdc>` USDC (Base) — the order amount plus network fees — to deposit_address before expires_at. The deposit is detected automatically; no further action needed.
+> Send exactly `<total_deposit_usdc>` USDC (Base), shown as total_deposit_usdc (the order amount plus fees), to deposit_address before expires_at. A smaller amount is not credited and is refunded to refund_address. The deposit is detected automatically: do not submit a transaction hash for this order.
 
-Calling the deposit endpoint on an NGN order is rejected:
+Calling the deposit endpoint on an automatic-path order is rejected:
 
 ```json
-{ "error": "This order settles automatically once funds arrive at deposit_address. No hash submission needed for this currency." }
+{ "error": "This order settles automatically once funds arrive at deposit_address, so there is no hash to submit. Send exactly total_deposit_usdc (deposit_submission_required is false on this order)." }
 ```
 
 ## Endpoint reference
@@ -104,7 +114,7 @@ Request:
 | --- | --- | --- |
 | `amount` | yes | Number, USDC. Must be positive and finite. Rounded to 2 decimal places. |
 | `currency` | yes | `KES`, `GHS`, `NGN`, or `UGX`. Upper-cased for you. |
-| `recipient` | no | Include it and the recipient is validated too, returning `recipient_name`. Shape in `references/recipients.md`. |
+| `recipient` | no | Include it and the recipient is validated too, returning `recipient_name`. Shape in `references/recipients.md`. **For KES, include it whenever you have it:** the recipient decides which deposit path the order takes, and the quote prices that path. Without one, a KES quote is priced as a Safaricom M-Pesa phone payout. |
 
 Response `200`:
 
@@ -116,6 +126,8 @@ Response `200`:
   "amount_local": 0,
   "fee": 0,
   "recipient_amount": 0,
+  "estimated_total_deposit_usdc": 0,
+  "deposit_submission_required": false,
   "recipient_name": "JANE WANJIRU",
   "expires_at": "2026-07-31T10:35:00.000Z"
 }
@@ -124,6 +136,8 @@ Response `200`:
 - `amount_local` is the gross local amount the USDC converts to.
 - `fee` is the Minisend fee, in local currency units.
 - **`recipient_amount` is the figure to show your user before they commit.** It is what the recipient nets at the quoted rate. It is a quote, not a settled figure — see [Which figure to show, and when](#which-figure-to-show-and-when).
+- `deposit_submission_required` is the deposit path an order with these details would take right now. Re-read it on the created order, which is authoritative.
+- `estimated_total_deposit_usdc` is present only on the automatic path: roughly what you will send, including the sender fee but not a small network fee that can be added at creation. The created order's `total_deposit_usdc` is exact; send that, not this.
 - `recipient_name` is present only when you supplied a `recipient` *and* a registered name could be resolved.
 - `expires_at` is 5 minutes out. It is informational — the quote endpoint reserves nothing, and the order you create later is priced fresh.
 
@@ -243,6 +257,7 @@ Response `201`:
   "recipient_amount": 0,
   "deposit_address": "0x…",
   "deposit_chain": "base",
+  "deposit_submission_required": true,
   "recipient": {
     "account_name": "Jane Wanjiru",
     "method": "MOBILE",
@@ -256,21 +271,21 @@ Response `201`:
 }
 ```
 
-An NGN order carries two extra fields, `sender_fee_usdc` and `transaction_fee_usdc`, and its `total_deposit_usdc` is `amount_usdc` plus those two. On the KES/GHS/UGX path `total_deposit_usdc` equals `amount_usdc`.
+This sample is on the hash-submission path. An order on the automatic path has `deposit_submission_required: false`, two extra fields, `sender_fee_usdc` and `transaction_fee_usdc`, and a `total_deposit_usdc` of `amount_usdc` plus those two. On the hash-submission path `total_deposit_usdc` equals `amount_usdc`.
 
-Fields that only populate once the order progresses: `deposit_tx_hash`, `settlement_receipt`, `completed_at`. **On the order object these keys are always present and carry `null` until they are set** — they are not omitted. Test them for truthiness or for `null`; `=== undefined` and `'settlement_receipt' in order` both give the wrong answer here. The exceptions are `sender_fee_usdc` and `transaction_fee_usdc`, which really are absent on a non-NGN order.
+Fields that only populate once the order progresses: `deposit_tx_hash`, `settlement_receipt`, `completed_at`. **On the order object these keys are always present and carry `null` until they are set** — they are not omitted. Test them for truthiness or for `null`; `=== undefined` and `'settlement_receipt' in order` both give the wrong answer here. The exceptions are `sender_fee_usdc` and `transaction_fee_usdc`, which really are absent on a hash-submission order.
 
 **This differs from the webhook payload**, where optional fields *are* dropped entirely when unset. The two surfaces genuinely behave differently, so a null-check that works on one will not work on the other.
 
-`deposit_chain` is also conditional, and this one catches people: it is set to `"base"` on KES, GHS, and UGX orders, but **an NGN order never sets it, so it comes back as `null`**. Both paths take USDC on Base regardless — branch on the payout currency, not on `deposit_chain`.
+`deposit_chain` is `"base"` on orders created today, but older automatic-path orders (NGN, created before this field was filled on that path) carry `null`. Every order takes USDC on Base regardless. Never branch on `deposit_chain`; branch on `deposit_submission_required`.
 
 Key rules:
 
-- **`deposit_address` is authoritative per order. Read it from the response every time. Never cache it, never hardcode it** — on the NGN path it is unique to the order, and on the other path it may change.
-- `expires_at` is your deposit window: 30 minutes from creation on the KES/GHS/UGX path, and on the NGN path whatever validity the single-use deposit address carries, which may be shorter. Read it from the response rather than assuming 30 minutes. Depositing after it has passed will not settle the order.
+- **`deposit_address` is authoritative per order. Read it from the response every time. Never cache it, never hardcode it** — on the automatic path it is unique to the order, and on the other path it may change.
+- `expires_at` is your deposit window: 30 minutes from creation on the hash-submission path, and on the automatic path whatever validity the single-use deposit address carries, which is much shorter. Read it from the response rather than assuming 30 minutes. Depositing after it has passed will not settle the order.
 - `recipient_amount` is returned on creation but is not part of the stored order — capture it here if you need to display it later.
 
-Errors: `400 { "error": "Invalid JSON body." }`; `400` validation (see `references/recipients.md`); `422 { "error": "Recipient validation failed. Confirm the account details and try again." }` — no order is created; `429` creation limit; `502 { "error": "Failed to price the order." }`; `502 { "error": "Failed to provision deposit address. Retry with a new Idempotency-Key." }` — note the *new* key, since the failed order id is now spent; `500 { "error": "Failed to create order." }`.
+Errors: `400 { "error": "Invalid JSON body." }`; `400` validation (see `references/recipients.md`); `422 { "error": "Recipient validation failed. Confirm the account details and try again." }` — no order is created; `502 { "error": "Could not verify the recipient right now. Nothing was created; retry shortly." }` — the account check could not be completed, which says nothing about the recipient: retry the same request; `429` creation limit; `502 { "error": "Failed to price the order." }`; `502 { "error": "Failed to provision deposit address. Retry with a new Idempotency-Key." }` — note the *new* key, since the failed order id is now spent; `500 { "error": "Failed to create order." }`.
 
 An out-of-range conversion returns `400` before anything is created, naming the band in both local currency and the USDC equivalent at the current rate:
 
@@ -281,7 +296,7 @@ Amount converts to <local amount> <CURRENCY>, outside the supported range of
 
 ### `POST /api/offramp/orders/{order_id}/deposit`
 
-KES, GHS, and UGX only. Reports the transfer you already made so the payout can be released.
+Only for orders with `deposit_submission_required: true`. Reports the transfer you already made so the payout can be released.
 
 Request:
 
@@ -300,7 +315,7 @@ Errors:
 | `400` | `{ "error": "transaction_hash must be a 0x-prefixed 32-byte hex hash." }` | Malformed hash. |
 | `400` | `{ "error": "Invalid JSON body." }` | Body wasn't valid JSON. |
 | `404` | `{ "error": "Order not found." }` | Unknown order, or one belonging to another account — the same 404 either way. |
-| `409` | `{ "error": "This order settles automatically once funds arrive at deposit_address. No hash submission needed for this currency." }` | NGN order. |
+| `409` | `{ "error": "This order settles automatically once funds arrive at deposit_address, so there is no hash to submit. Send exactly total_deposit_usdc (deposit_submission_required is false on this order)." }` | Automatic-path order. Nothing to do; the deposit is detected on its own. |
 | `409` | `{ "error": "Order is <status> and can no longer be paid." }` | Order is in a state past `pending` — the live status name is interpolated into the message. |
 | `409` | `{ "error": "Order expired before a deposit was submitted. Create a new order." }` | The deposit window closed. The order is flipped to `expired`. |
 | `409` | `{ "error": "This transaction hash was already used for another order." }` | One transfer cannot pay two orders. |
@@ -378,7 +393,7 @@ The complete status vocabulary. These exact strings appear on the order, in the 
 
 | Status | Meaning | Final? |
 | --- | --- | --- |
-| `pending` | Order created, awaiting your USDC. On the KES/GHS/UGX path it stays here until you submit the hash. | no |
+| `pending` | Order created, awaiting your USDC. On the hash-submission path it stays here until you submit the hash. | no |
 | `deposit_received` | Part of the defined vocabulary but not emitted by the current flows, which go straight from `pending` to `settling`. Handle it as non-final if you ever see it; don't build a step around it. | no |
 | `settling` | Deposit accounted for; the local-currency payout is in flight. | no |
 | `completed` | The recipient was paid. `completed_at` and usually `settlement_receipt` are set. | **yes** |
@@ -387,7 +402,7 @@ The complete status vocabulary. These exact strings appear on the order, in the 
 
 `completed`, `failed`, and `expired` are terminal and immutable — an order never leaves them, and repeated settlement notifications about a terminal order are ignored. Treat any other status as still moving.
 
-`settlement_receipt` on a completed order is the payout's receipt reference: a settlement transaction hash on the NGN path, and the local-currency payment receipt number on the KES/GHS/UGX path.
+`settlement_receipt` on a completed order is the payout's receipt reference: a settlement transaction hash on the automatic path, and the local-currency payment receipt number (an M-Pesa code, for example) on the hash-submission path. A KES order on the automatic path therefore has a transaction hash here, not an M-Pesa code.
 
 ## Webhook events
 
@@ -458,9 +473,9 @@ Because these bands are in local currency and the exchange rate moves, the USDC 
 
 ## Fees
 
-A Minisend fee applies to each off-ramp order. On the KES, GHS, and UGX path it is **deducted from the local amount**, so the recipient receives less than the gross conversion — `amount_local` is the gross, `fee` is the deduction, and `recipient_amount` is what lands. On the NGN path there is no separate line-item deduction; the pricing is carried in the rate, and `recipient_amount` equals `amount_local`.
+A Minisend fee applies to each off-ramp order. On the hash-submission path it is **deducted from the local amount**, so the recipient receives less than the gross conversion — `amount_local` is the gross, `fee` is the deduction, and `recipient_amount` is what lands. On the automatic path there is no deduction from the payout; `fee` is `0` and `recipient_amount` equals `amount_local`.
 
-The NGN path additionally has deposit-side fees, returned on the order as `sender_fee_usdc` and `transaction_fee_usdc`. These are added to what you send, not taken from the recipient: `total_deposit_usdc` already includes them, which is why it exceeds `amount_usdc`.
+The automatic path instead has deposit-side fees, returned on the order as `sender_fee_usdc` and `transaction_fee_usdc`. These are added to what you send, not taken from the recipient: `total_deposit_usdc` already includes them, which is why it exceeds `amount_usdc`. A KES M-Pesa order can land on either path, so compare totals from the quote rather than assuming one fee shape per currency.
 
 ### Which figure to show, and when
 
@@ -468,15 +483,15 @@ There are two moments, and they need different fields.
 
 **Before you send — `recipient_amount`.** It is the authoritative figure to quote to your user at decision time, from either the quote response or the order-creation response. Never compute it yourself from a rate and never hardcode a fee.
 
-**After settlement — `amount_local` and `fee` on the terminal webhook.** On the KES, GHS, and UGX path the order is priced again at the moment the payout is released, so the executed economics can differ from the quote: `amount_local`, `exchange_rate`, and `fee` on the `offramp.completed` payload are the settled values, not the ones you saw at creation. **`amount_local` minus `fee` is what the recipient actually received.** `recipient_amount` is not stored on the order and is not in the webhook payload, so this subtraction is the only route to the final number — record it from the webhook rather than reusing your quote-time figure for receipts, reconciliation, or accounting.
+**After settlement — `amount_local` and `fee` on the terminal webhook.** On the hash-submission path the order is priced again at the moment the payout is released, so the executed economics can differ from the quote: `amount_local`, `exchange_rate`, and `fee` on the `offramp.completed` payload are the settled values, not the ones you saw at creation. **`amount_local` minus `fee` is what the recipient actually received.** `recipient_amount` is not stored on the order and is not in the webhook payload, so this subtraction is the only route to the final number — record it from the webhook rather than reusing your quote-time figure for receipts, reconciliation, or accounting.
 
-On the NGN path `fee` is not a deduction and `amount_local` is the recipient's amount directly.
+On the automatic path the rate is locked at creation, `fee` is `0`, and `amount_local` is the recipient's amount directly.
 
 For current rates and fee terms, contact Minisend at `info@minisend.xyz`.
 
 ## Worked example
 
-A KES payout end to end, including the hash-submission step. Runs against the live API with a real `ms_live_` key.
+A KES payout end to end, handling both deposit paths. Runs against the live API with a real `ms_live_` key.
 
 ```ts
 const BASE = 'https://merchant.minisend.xyz'
@@ -526,6 +541,7 @@ const order = await call<{
   status: string
   deposit_address: string
   total_deposit_usdc: number
+  deposit_submission_required: boolean
   expires_at: string
   instructions: string
 }>('/api/offramp/orders', {
@@ -540,17 +556,20 @@ const order = await call<{
   }),
 })
 
-// 3. Send USDC on Base to order.deposit_address, for exactly
-//    order.total_deposit_usdc, from your own wallet — with viem, ethers,
-//    or whatever you already use. Must land before order.expires_at.
+// 3. Send USDC on Base to order.deposit_address, for EXACTLY
+//    order.total_deposit_usdc (never amount_usdc), from your own wallet —
+//    with viem, ethers, or whatever you already use. Must land before
+//    order.expires_at, which can be only minutes away on the automatic path.
 const txHash = await sendUsdcOnBase(order.deposit_address, order.total_deposit_usdc)
 
-// 4. KES is on the hash-submission path: report the transfer.
-//    (Skip this entire step for NGN — its deposit is detected automatically.)
-await call(`/api/offramp/orders/${order.order_id}/deposit`, {
-  method: 'POST',
-  body: JSON.stringify({ transaction_hash: txHash }),
-})
+// 4. Report the transfer only if this order asks for it. A KES M-Pesa order
+//    can be on either path, so branch on the flag, never on the currency.
+if (order.deposit_submission_required) {
+  await call(`/api/offramp/orders/${order.order_id}/deposit`, {
+    method: 'POST',
+    body: JSON.stringify({ transaction_hash: txHash }),
+  })
+}
 
 // 5. Wait for the webhook. Poll only as a fallback. A read past the window
 //    expires the order in-band, which is fine — that path delivers
@@ -607,12 +626,13 @@ export function handleWebhook(rawBody: string, signature: string) {
 
 ## Common mistakes
 
-- **Sending USDC and stopping there, on a KES/GHS/UGX order.** No hash, no payout. The order expires.
-- **Sending `amount_usdc` instead of `total_deposit_usdc` on an NGN order.** It's short by the deposit-side fees.
-- **Caching `deposit_address`.** On the NGN path it is single-use per order; reusing one is a lost transfer.
+- **Branching on the payout currency instead of `deposit_submission_required`.** KES M-Pesa orders can take either path, and which one can change between orders.
+- **Sending USDC and stopping there, on a hash-submission order.** No hash, no payout. The order expires.
+- **Sending `amount_usdc` instead of `total_deposit_usdc`.** On the automatic path that is short by the deposit-side fees, and a short deposit is not credited; it goes back to `refund_address`.
+- **Caching `deposit_address`.** On the automatic path it is single-use per order; reusing one is a lost transfer.
 - **Displaying `amount_local` as what the recipient gets, pre-send.** That's the gross. Quote with `recipient_amount`.
-- **Reconciling against the quote-time `recipient_amount`.** The KES/GHS/UGX path re-prices at payout, so the settled figure is `amount_local` minus `fee` on the terminal webhook.
-- **Branching on `deposit_chain`.** It is `null` on NGN orders — present, not absent — even though the deposit still goes to Base. Branch on the payout currency.
+- **Reconciling against the quote-time `recipient_amount`.** The hash-submission path re-prices at payout, so the settled figure is `amount_local` minus `fee` on the terminal webhook.
+- **Branching on `deposit_chain`.** It can be `null` on older automatic-path orders, even though every deposit goes to Base. Branch on `deposit_submission_required`.
 - **Looking for `reference` in the response.** You send `reference`; you get back `external_reference`.
-- **Treating a successful order creation as proof a phone number exists.** For mobile, till, and paybill destinations validation is best-effort and never blocks — see `references/recipients.md`.
+- **Treating a successful order creation as proof a phone number exists.** On the hash-submission path, mobile, till, and paybill validation is best-effort and never blocks — see `references/recipients.md`.
 - **Omitting `refund_address`.** It is required on every order, and it is where funds return if the payout can't complete.
