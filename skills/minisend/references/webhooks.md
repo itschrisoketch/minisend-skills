@@ -244,7 +244,7 @@ Nine event names exist across three products. **Group them by product and do not
 | Product | Events |
 | --- | --- |
 | Off-ramp | `offramp.completed`, `offramp.failed`, `offramp.expired` |
-| On-ramp | `onramp.completed`, `onramp.released`, `onramp.failed`, `onramp.expired` |
+| On-ramp | `onramp.completed`, `onramp.released`, `onramp.failed`, `onramp.cancelled`, `onramp.expired` |
 | Checkout | `checkout.completed`, `checkout.failed`, `checkout.expired`, `checkout.forwarded`, `settlement.forward_failed` |
 | Wallets | `wallet.deposit.received` |
 
@@ -288,12 +288,13 @@ Field names differ from the order object — `payout_currency` (not `currency`),
 | `onramp.completed` | The local currency was collected. The order is `completed`. |
 | `onramp.released` | The on-chain USDC transfer to `release_address` was recorded. **Carries `release_tx_hash` and does not change the order's status.** |
 | `onramp.failed` | The payment did not produce a completed order. The order is `failed`. |
+| `onramp.cancelled` | KES only. The customer dismissed the M-Pesa prompt. The order is `cancelled`, and `onramp.failed` is **not** sent for it. |
 | `onramp.expired` | The order window closed unpaid. Delivered whether the sweep or a read expires the order. |
 
-On-ramp has two rails, KES (an M-Pesa/Airtel prompt) and NGN (a bank transfer to a virtual account), and they share this exact event catalogue and payload shape — see `references/onramp.md` for the full rail-by-rail detail. Two on-ramp specifics that have no counterpart in the other products:
+On-ramp has two rails, KES (an M-Pesa prompt) and NGN (a bank transfer to a virtual account), and they share this exact event catalogue and payload shape — see `references/onramp.md` for the full rail-by-rail detail. Two on-ramp specifics that have no counterpart in the other products:
 
 - **`onramp.released` is not a status change.** It is a money-arrived signal, delivered from a callback separate from the one that completes the order. **No ordering with `onramp.completed` is guaranteed** — it can arrive first, and its arrival does not imply you have already processed `onramp.completed`. The gap between the two tends to be shorter on NGN than on KES, but neither rail guarantees an order.
-- **`onramp.completed` can follow `onramp.expired` or `onramp.failed`.** Only `completed` is immutable on an on-ramp order; a late confirmation that the customer really was charged moves an `expired` or `failed` order to `completed` and fires `onramp.completed`. This is deliberate.
+- **`onramp.completed` can follow `onramp.expired`, `onramp.failed` or `onramp.cancelled`.** Only `completed` is immutable on an on-ramp order; a late confirmation that the customer really was charged moves an `expired`, `failed` or `cancelled` order to `completed` and fires `onramp.completed`. This is deliberate.
 
 So a single on-ramp order can legitimately produce two, or even three, different events.
 
@@ -324,7 +325,7 @@ So a single on-ramp order can legitimately produce two, or even three, different
 Always present: `event`, `order_id`, `status`, `currency`, `payment_method`, `amount_usdc`, `amount_local`, `fee`, `exchange_rate`, `customer_phone`, `mobile_network`, `release_address`, `created_at`.
 Omitted when unset: `external_reference`, `receipt_number`, `release_tx_hash`, `failure_reason`, `completed_at`.
 
-`payment_method` is `"mpesa"` or `"bank_transfer"` — names the rail. On an NGN event, `currency` is `"NGN"`, `payment_method` is `"bank_transfer"`, and **`customer_phone` and `mobile_network` are present but `null`** rather than omitted, since neither has meaning on the bank-transfer rail. `failure_reason` appears on `onramp.failed`; on NGN it's a closed set of values (`refunded_to_payer`, `deposit_not_settled`, `cancelled`, `provision_failed`, `persist_failed`, `price_moved`) rather than KES's free-text `stk_failed: <detail>` — `references/onramp.md` explains what each means and which one (`deposit_not_settled`) means the customer already paid and should not be asked to pay again. `release_tx_hash` appears on `onramp.released` and on anything delivered after the release was recorded. The payload has no `release_chain`, `release_asset`, or `expires_at`. Full field meanings are in `references/onramp.md`.
+`payment_method` is `"mpesa"` or `"bank_transfer"` — names the rail. On an NGN event, `currency` is `"NGN"`, `payment_method` is `"bank_transfer"`, and **`customer_phone` and `mobile_network` are present but `null`** rather than omitted, since neither has meaning on the bank-transfer rail. `failure_reason` appears on `onramp.failed` and `onramp.cancelled`; on NGN it's a closed set of values (`refunded_to_payer`, `deposit_not_settled`, `cancelled`, `provision_failed`, `persist_failed`, `price_moved`) rather than KES's free-text `stk_failed: <detail>` — `references/onramp.md` explains what each means and which one (`deposit_not_settled`) means the customer already paid and should not be asked to pay again. `release_tx_hash` appears on `onramp.released` and on anything delivered after the release was recorded. The payload has no `release_chain`, `release_asset`, or `expires_at`. Full field meanings are in `references/onramp.md`.
 
 ### Checkout
 
@@ -556,7 +557,7 @@ Expiry events that earlier versions dropped — `offramp.expired` and `onramp.ex
 - **Expecting a timestamp or event-id header.** There are none. Dedupe from the payload.
 - **Deduplicating on `order_id` alone in on-ramp.** One order emits `onramp.released` as well as a status event, and can emit `onramp.expired` then `onramp.completed`. Key on `order_id` plus `event`.
 - **Assuming `onramp.released` comes after `onramp.completed`.** No ordering is guaranteed.
-- **Sealing an order or session on `failed` or `expired`.** On-ramp orders and M-Pesa-paid checkout sessions can still complete afterwards.
+- **Sealing an order or session on `failed`, `cancelled` or `expired`.** On-ramp orders and M-Pesa-paid checkout sessions can still complete afterwards.
 - **Booking revenue from `amount_usdc` on `checkout.completed`.** It is the expected amount, not the amount received. Use `amount_received_usdc`.
 - **Returning `200` from a `catch` block.** The event is gone. Return a non-2xx so it is retried.
 - **Doing the work before responding.** You have 10 seconds; a slow handler turns successes into retries and duplicates.

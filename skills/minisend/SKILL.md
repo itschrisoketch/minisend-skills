@@ -7,7 +7,7 @@ description: Integrate Minisend payment APIs — accept USDC/USDT and pay out lo
 
 ## What Minisend does
 
-Minisend moves money between stablecoins and local currency across Kenya, Nigeria, Ghana, and Uganda. A business holding USDC or USDT can pay it out as KES, NGN, GHS, or UGX to a bank account, mobile money account, paybill, or till (off-ramp), or accept a customer's stablecoin payment through a hosted checkout page that settles to the business's own bank or mobile money account (checkout). A business can also collect **KES or NGN** from a customer — via an M-Pesa/Airtel Money payment prompt for KES, or a bank transfer to a virtual account for NGN — and receive stablecoins in exchange (on-ramp) — or provision stablecoin wallets programmatically for its own users (wallets).
+Minisend moves money between stablecoins and local currency across Kenya, Nigeria, Ghana, and Uganda. A business holding USDC or USDT can pay it out as KES, NGN, GHS, or UGX to a bank account, mobile money account, paybill, or till (off-ramp), or accept a customer's stablecoin payment through a hosted checkout page that settles to the business's own bank or mobile money account (checkout). A business can also collect **KES or NGN** from a customer — via an M-Pesa payment prompt for KES, or a bank transfer to a virtual account for NGN — and receive stablecoins in exchange (on-ramp) — or provision stablecoin wallets programmatically for its own users (wallets).
 
 The two directions do not share a method list. Paybill, till, and bank transfer are off-ramp *payout* destinations; on-ramp collects through a phone prompt (KES) or a bank transfer into an account Minisend issues (NGN), and nothing else.
 
@@ -16,7 +16,7 @@ The two directions do not share a method list. Paybill, till, and bank transfer 
 | You want to | Product | Read |
 | --- | --- | --- |
 | Pay someone in KES, NGN, GHS, or UGX from a USDC balance | Off-ramp | `references/offramp.md` |
-| Collect KES via an M-Pesa/Airtel Money prompt, or NGN via a bank transfer, and receive USDC | On-ramp | `references/onramp.md` |
+| Collect KES via an M-Pesa prompt, or NGN via a bank transfer, and receive USDC | On-ramp | `references/onramp.md` |
 | Create wallets for your own users, and see what they receive | Wallets | `references/wallets.md` |
 | Accept a payment and settle to a bank or mobile money account, or keep it in USDC | Checkout | `references/checkout.md` |
 
@@ -56,7 +56,7 @@ Full detail — scopes, the access-gate 403 model, rate limits, error bodies, an
 - `references/authentication.md` — API keys, scopes, the access-gate 403 model, rate limits, error bodies
 - `references/offramp.md` — pay out KES, NGN, GHS, or UGX from a stablecoin balance
 - `references/recipients.md` — recipient formats and validation per currency and method
-- `references/onramp.md` — collect KES via an M-Pesa/Airtel Money prompt, or NGN via a bank transfer, and receive stablecoins
+- `references/onramp.md` — collect KES via an M-Pesa prompt, or NGN via a bank transfer, and receive stablecoins
 - `references/wallets.md` — programmatic wallet creation for your own users
 - `references/checkout.md` — hosted checkout and payment links
 - `references/webhooks.md` — event types, signature verification, delivery/retry behavior

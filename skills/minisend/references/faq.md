@@ -12,7 +12,7 @@ No, for any of the four products. The wallet API once recognised a `wsk_test_` p
 
 **Off-ramp** — you already hold USDC and want to pay someone else out in local currency, naming a different recipient per order. Use it when you're the one initiating a payout to a third party. See `references/offramp.md`.
 
-**On-ramp** — you charge a customer in local currency, via an M-Pesa/Airtel prompt (KES) or a bank transfer to a virtual account (NGN), and receive USDC yourself. Use it when you want stablecoins in exchange for a local-currency charge, and nobody downstream gets paid out in local currency. See `references/onramp.md`.
+**On-ramp** — you charge a customer in local currency, via an M-Pesa prompt (KES) or a bank transfer to a virtual account (NGN), and receive USDC yourself. Use it when you want stablecoins in exchange for a local-currency charge, and nobody downstream gets paid out in local currency. See `references/onramp.md`.
 
 Provisioning wallet addresses for your own users is a separate product again, with its own key namespace — see `references/wallets.md`.
 
@@ -30,11 +30,11 @@ Every scoped endpoint checks two things — the key's scope, and whether your ac
 
 ## Which chains and assets can a customer pay with?
 
-For checkout, USDC on Base always works, and always settles. An account can also accept USDC on a per-account subset of `ETH`, `ARB`, `OP`, `MATIC`, `AVAX` (read `accepted_chains` off the session, don't hardcode it) — but `accepted_chains` only means "not outright rejected," not "guaranteed to settle": a deposit on a chain outside the set fails with no webhook, and one on an accepted-but-unswept chain can park at `deposit_received` indefinitely. The hosted checkout page additionally accepts USDT and a wider chain set by normalising it to USDC on Base before matching, plus M-Pesa in Kenya via the two M-Pesa endpoints (KES, `Safaricom`/`Airtel` only). Off-ramp deposits and on-ramp releases are USDC on Base only. See `references/checkout.md` (What the customer can pay with).
+For checkout, USDC on Base always works, and always settles. An account can also accept USDC on a per-account subset of `ETH`, `ARB`, `OP`, `MATIC`, `AVAX` (read `accepted_chains` off the session, don't hardcode it) — but `accepted_chains` only means "not outright rejected," not "guaranteed to settle": a deposit on a chain outside the set fails with no webhook, and one on an accepted-but-unswept chain can park at `deposit_received` indefinitely. The hosted checkout page additionally accepts USDT and a wider chain set by normalising it to USDC on Base before matching, plus M-Pesa in Kenya via the two M-Pesa endpoints (KES, Safaricom numbers only). Off-ramp deposits and on-ramp releases are USDC on Base only. See `references/checkout.md` (What the customer can pay with).
 
 ## Which countries and payout methods are supported?
 
-Off-ramp pays out KES (mobile money, till, paybill, or bank transfer — Kenya), GHS (mobile money — Ghana), UGX (mobile money — Uganda), and NGN (bank transfer only — Nigeria). On-ramp collects KES, via M-Pesa and Airtel Money in Kenya, or NGN, via a bank transfer to a virtual account — nothing else, on either product. See `references/recipients.md` for the full off-ramp method matrix and `references/onramp.md` for on-ramp's two rails.
+Off-ramp pays out KES (mobile money, till, paybill, or bank transfer — Kenya), GHS (mobile money — Ghana), UGX (mobile money — Uganda), and NGN (bank transfer only — Nigeria). On-ramp collects KES, via M-Pesa in Kenya, or NGN, via a bank transfer to a virtual account — nothing else, on either product. See `references/recipients.md` for the full off-ramp method matrix and `references/onramp.md` for on-ramp's two rails.
 
 ## What are the limits per currency and per transaction?
 
@@ -86,7 +86,7 @@ No, and treating it as zero is the mistake this warns about. On `GET /api/mercha
 
 ## Are terminal statuses really terminal?
 
-It varies by product, so don't reuse one product's assumption on another. Off-ramp's `completed`, `failed`, and `expired` are genuinely immutable. Checkout's `expired` is terminal for a stablecoin payment but not for an M-Pesa one — a late confirmation can still complete it — and `failed` should be treated as terminal for your own flow control even though it isn't formally sealed. On-ramp is the least final: only `completed` is strictly immutable, and a late confirmation can move `failed` or `expired` all the way to `completed`. See the lifecycle sections of `references/offramp.md`, `references/checkout.md`, and `references/onramp.md`.
+It varies by product, so don't reuse one product's assumption on another. Off-ramp's `completed`, `failed`, and `expired` are genuinely immutable. Checkout's `expired` is terminal for a stablecoin payment but not for an M-Pesa one — a late confirmation can still complete it — and `failed` should be treated as terminal for your own flow control even though it isn't formally sealed. On-ramp is the least final: only `completed` is strictly immutable, and a late confirmation can move `failed`, `cancelled` or `expired` all the way to `completed`. See the lifecycle sections of `references/offramp.md`, `references/checkout.md`, and `references/onramp.md`.
 
 ## How do I deduplicate webhook deliveries?
 

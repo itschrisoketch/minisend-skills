@@ -259,7 +259,7 @@ Request:
 | Field | Required | Notes |
 | --- | --- | --- |
 | `phone` | yes | The **paying customer's** Kenyan mobile number. Accepted input shapes are documented in `references/recipients.md`. Normalised to `0XXXXXXXXX`. |
-| `network` | no | `Safaricom` or `Airtel`, overriding auto-detection. Leave it out — auto-detection from the number's prefix is the better path. |
+| `network` | no | `Safaricom`, overriding auto-detection (for a number ported to Safaricom from another network). Leave it out — auto-detection from the number's prefix is the better path. `Airtel` is refused with a `400`. |
 
 The amount is **not** a request field. It is re-quoted server-side from the session; a client-supplied price is never trusted.
 
@@ -387,7 +387,7 @@ Request:
 | `slug` | yes | The account's slug. |
 | `amount_kes` | yes | **The exact KES the customer will be charged.** Rounded to a whole number. The fee is carved out of it; the remainder converts. This is the opposite direction from `POST /api/merchant/pay`, which fixes the net instead. |
 | `phone` | yes | The paying customer's Kenyan mobile number. |
-| `network` | no | `Safaricom` or `Airtel`, overriding auto-detection. |
+| `network` | no | `Safaricom`, overriding auto-detection. `Airtel` is refused with a `400`. |
 | `description` | no | Shown on the hosted page. |
 
 Response `201`:
@@ -425,7 +425,7 @@ Treat `accepted_chains` as "chains that will not be outright rejected", not "cha
 
 **USDT, and USDC from a wider chain set.** The hosted checkout and payment-link pages also accept USDT, and offer a broader list of chains than the six above, by normalising the inflow to USDC on Base before it is matched to the session. `accepted_chains` does not gate this path and there is no per-chain API signal for it — so if you are building your own payment page rather than using the hosted one, drive customers to the hosted page for anything other than the chains in `accepted_chains`.
 
-**M-Pesa in Kenya**, via the two M-Pesa endpoints above. Kenya only, KES only, `Safaricom` and `Airtel` only.
+**M-Pesa in Kenya**, via the two M-Pesa endpoints above. Kenya only, KES only, Safaricom (M-Pesa) numbers only.
 
 ### Quote the exact amount — and why an inexact one is worse than a rejection
 

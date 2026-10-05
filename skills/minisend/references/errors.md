@@ -67,7 +67,7 @@ Recipient-object messages — `Missing recipient object.`, `recipient.account_na
 | `{ "error": "phone is required." }` | No `phone`. |
 | `{ "error": "Please enter a valid Kenyan phone number." }` | Not a recognisable Kenyan mobile shape. |
 | `{ "error": "This Kenyan number doesn't look right. Please check it and try again." }` | Right shape, prefix not allocated to a known carrier. |
-| `{ "error": "Only Safaricom and Airtel numbers are supported." }` | A real Kenyan number on a carrier with no mobile-money route. |
+| `{ "error": "Only Safaricom M-Pesa numbers are supported." }` | A real Kenyan number that isn't on Safaricom M-Pesa (Airtel, Telkom, Equitel and smaller networks), or `network: "Airtel"`. |
 | `{ "error": "currency must be KES (M-Pesa) or NGN (bank transfer)." }` | `currency` was something other than `KES` or `NGN`. Shared with NGN. |
 | `{ "error": "Provide exactly one of amount_usdc or amount_kes (positive number)." }` | Both amounts, neither, or a non-positive one. |
 | `Amount converts to only <n> KES net — M-Pesa onramp requires at least 100 KES. Try a larger amount.` | Below the net floor. **This is a net figure**, not the charge the customer sees. |

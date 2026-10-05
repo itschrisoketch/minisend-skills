@@ -4,7 +4,7 @@
 
 On-ramp is the inbound half of Minisend: you collect local currency from a paying customer and receive USDC at a wallet address you nominate. It has two rails, picked by `currency`:
 
-- **`KES`** — an M-Pesa or Airtel Money payment prompt. You name the customer's phone number and your own release address; Minisend sends a payment prompt to that phone; when the customer approves it on their handset, USDC is released on Base to your address.
+- **`KES`** — an M-Pesa payment prompt. You name the customer's phone number and your own release address; Minisend sends a payment prompt to that phone; when the customer approves it on their handset, USDC is released on Base to your address.
 - **`NGN`** — a bank transfer. Minisend returns a virtual bank account; you show it to the customer; the customer transfers naira from their own bank; USDC is released on Base to your address once the transfer lands. Nothing is pushed to the customer here — there is no prompt, no PIN entry, no handset step.
 
 The customer — the **payer** — is the party being charged, on either rail. You — the **integrator** — are the party receiving value. The address on the order is yours, not theirs. Both rails share auth, rate limits, order shape, and webhook events; they differ in what you provide at order creation and in the object the API hands back for the customer to act on.
@@ -46,7 +46,7 @@ The order-creation cap is shared across KES and NGN — it's a single per-accoun
 4. **Minisend releases USDC on Base** to your `release_address`.
 5. **Receive the webhooks** — `onramp.completed` when the cash is collected, `onramp.released` when the on-chain transfer is recorded. Or poll `GET /api/onramp/orders/{order_id}`.
 
-**Both rails are one-shot.** The KES prompt fires once, at creation, with no endpoint to re-send it. The NGN account is minted once, at creation, and stops being usable once it expires or the order leaves `pending` — there is no endpoint to reissue it either. If the customer doesn't complete the payment in time, the order ends `failed` or `expired` and stays that way — you create a **new order** to try again. This is deliberate on both rails: it makes it structurally impossible for one order to charge a customer twice.
+**Both rails are one-shot.** The KES prompt fires once, at creation, with no endpoint to re-send it. The NGN account is minted once, at creation, and stops being usable once it expires or the order leaves `pending` — there is no endpoint to reissue it either. If the customer cancels the prompt or doesn't complete the payment in time, the order ends `cancelled`, `failed` or `expired` and stays that way — you create a **new order** to try again. This is deliberate on both rails: it makes it structurally impossible for one order to charge a customer twice.
 
 ## Bank codes (NGN)
 
@@ -158,13 +158,13 @@ Optional header: `Idempotency-Key: <your-unique-string>`. A replay with the same
 | `currency` | no | `KES`; defaults to `KES`. |
 | `amount_usdc` / `amount_kes` | one of | Exactly one, same rules as the quote. The order is priced server-side; client-supplied prices are never trusted. |
 | `phone` | yes | The **paying customer's** Kenyan mobile number. Accepted input shapes are the same as off-ramp's — see `references/recipients.md`. Normalised to `0XXXXXXXXX`. |
-| `network` | no | `Safaricom` or `Airtel`, overriding auto-detection. See the note below — this field is fussier than it looks. |
+| `network` | no | `Safaricom`, overriding auto-detection. See the note below — this field is fussier than it looks. |
 | `address` | yes | **Your own** wallet address, `0x` + 40 hex characters. Where the USDC is released, on Base. Lower-cased on the order. |
 | `reference` | no | Your own identifier. **Note the asymmetry: you send `reference`, and it comes back as `external_reference`** on the order and on the webhook. |
 
 There is no `refund_address` on a KES order and no recipient object — nothing is paid out in local currency, so neither applies. (NGN does have a refund concept, but it's shaped differently — see below.)
 
-**The `network` field behaves differently from off-ramp's `mobile_network`.** Off-ramp normalises forgivingly (`references/recipients.md` documents the aliases and case-folding). Here, only the exact strings `Safaricom` and `Airtel` are honoured; anything else — `safaricom`, `mpesa`, `SAFARICOM` — is **silently ignored** rather than rejected, and the carrier is auto-detected from the number's prefix instead. Auto-detection is the better path: leave `network` out unless you have a specific reason. And note that an explicit override *replaces* the carrier check entirely, so overriding a number that isn't on that network produces an order that fails when the prompt is sent rather than a clean `400`.
+**The `network` field behaves differently from off-ramp's `mobile_network`.** Off-ramp normalises forgivingly (`references/recipients.md` documents the aliases and case-folding). Here, only the exact string `Safaricom` is honoured as an override; `Airtel` is refused with a `400` (Airtel Money isn't supported for collections), and anything else — `safaricom`, `mpesa`, `SAFARICOM` — is **silently ignored** rather than rejected, and the carrier is auto-detected from the number's prefix instead. Auto-detection is the better path: leave `network` out unless you have a specific reason, such as a number ported to Safaricom from another network. And note that a `Safaricom` override *replaces* the carrier check entirely, so overriding a number that isn't actually on Safaricom produces an order that fails when the prompt is sent rather than a clean `400`.
 
 Response `201` — KES:
 
@@ -215,7 +215,7 @@ Errors:
 | `400` | `{ "error": "phone is required." }` | No `phone`. |
 | `400` | `{ "error": "Please enter a valid Kenyan phone number." }` | `phone` isn't a recognisable Kenyan mobile shape. |
 | `400` | `{ "error": "This Kenyan number doesn't look right. Please check it and try again." }` | Right shape, but the prefix isn't allocated to any known carrier. |
-| `400` | `{ "error": "Only Safaricom and Airtel numbers are supported." }` | A real Kenyan number on a carrier with no mobile-money route. |
+| `400` | `{ "error": "Only Safaricom M-Pesa numbers are supported." }` | A real Kenyan number that isn't on Safaricom M-Pesa (Airtel, Telkom, Equitel and smaller networks), or `network: "Airtel"`. |
 | `400` | `{ "error": "currency must be KES (M-Pesa) or NGN (bank transfer)." }` | `currency` was something other than `KES` or `NGN`. |
 | `400` | `{ "error": "Provide exactly one of amount_usdc or amount_kes (positive number)." }` | Both amounts, neither, or a non-positive one. |
 | `400` | Amount messages in [Limits](#limits). | Below the minimum, or outside the supported band. |
@@ -397,13 +397,16 @@ The complete status vocabulary. These exact strings appear on the order, in the 
 | `deposit_received` | The naira transfer arrived; USDC is being released. | **NGN only** | no |
 | `completed` | The local currency was collected. `completed_at` is set, and `receipt_number` carries the customer's payment receipt (KES) or the order's own receipt reference (NGN). | both | **yes** |
 | `failed` | The payment did not go through, or went through but couldn't be completed. `failure_reason` is set. | both | in practice |
+| `cancelled` | The customer dismissed the M-Pesa prompt themselves. Nothing was charged. `failure_reason` is set (`stk_failed: <detail>`). | **KES only** | in practice |
 | `expired` | The order window closed with no confirmed payment. | both | in practice |
 
 **`deposit_received` exists only on the NGN rail.** KES goes straight from `pending` to an end state, same as before; NGN has this one extra waypoint between "we've issued an account" and "you're paid," because the naira can land measurably before the USDC release completes. **Once an order reaches `deposit_received`, stop showing the customer the bank account** — `payment_instructions` is gone from the response by then anyway, and the money has already moved. Completion typically follows within a couple of minutes of the transfer landing.
 
-**`completed` is the only strictly immutable status, on either rail.** `failed` and `expired` are end states you should treat as terminal for your own flow control — nothing further is expected, and a new order is the way forward — but they are not sealed: if a late confirmation shows the customer's money *was* collected, the order still moves to `completed` and `onramp.completed` fires. This is deliberate; the customer was charged, so the order has to reflect that. The practical rule: **keep handling `onramp.completed` for an order even after you have seen it `expired` or `failed`,** and never mark a payment permanently abandoned in your own system without being idempotent about a later completion.
+**`completed` is the only strictly immutable status, on either rail.** `failed`, `cancelled` and `expired` are end states you should treat as terminal for your own flow control — nothing further is expected, and a new order is the way forward — but they are not sealed: if a late confirmation shows the customer's money *was* collected, the order still moves to `completed` and `onramp.completed` fires. This is deliberate; the customer was charged, so the order has to reflect that. The practical rule: **keep handling `onramp.completed` for an order even after you have seen it `expired`, `failed` or `cancelled`,** and never mark a payment permanently abandoned in your own system without being idempotent about a later completion.
 
-The reverse never happens — an order that is `completed` or `expired` is never moved to `failed`.
+The reverse never happens — an order that is `completed` or `expired` is never moved to `failed` or `cancelled`.
+
+**`cancelled` is not a kind of `failed`.** It has its own status and its own event, `onramp.cancelled`; a cancelled order never sends `onramp.failed`. A handler that only listens for `onramp.failed` will see a cancelled order as one that never finished. Treat both as "no payment, create a new order if the customer still wants to pay," but keep them apart if you report on them: a cancellation is the customer's choice, a failure is not. NGN orders never reach `cancelled`; NGN's own `failure_reason` value `cancelled` (below) sits on a `failed` order and is unrelated to this status.
 
 `release_tx_hash` is the on-chain transfer of USDC to your `release_address`. It is recorded independently of the status transition and usually lands shortly after `completed` — but the two are separate events and either order is possible. `receipt_number` is the local payment receipt from the customer's confirmation.
 
@@ -431,6 +434,7 @@ On-ramp emits four events to your configured webhook URL, shared across both rai
 | `onramp.completed` | The local currency was collected. Order is `completed`. Fires first. |
 | `onramp.released` | The on-chain USDC transfer to `release_address` was recorded. **Carries `release_tx_hash`. Does not change the order's status.** |
 | `onramp.failed` | The payment did not produce a completed order. Order is `failed`. |
+| `onramp.cancelled` | KES only. The customer dismissed the M-Pesa prompt. Order is `cancelled`. |
 | `onramp.expired` | The order window closed unpaid. Order is `expired`. |
 
 `onramp.released` is the one with no off-ramp equivalent, and the one most likely to surprise you: it is a *money-arrived* signal, not a state change. On KES, the gap between `onramp.completed` and `onramp.released` can be real — the on-chain hash isn't always known the instant the collection is confirmed. **On NGN, the two typically arrive close together**, since the release follows the confirmed bank transfer without a separate handset-confirmation step in between — but no ordering between them is guaranteed on either rail, so don't build logic that assumes one always precedes the other. If you credit a user on `onramp.completed`, treat `onramp.released` as your on-chain receipt; if you need the funds confirmed on Base before crediting, key off `onramp.released` instead.
@@ -471,13 +475,13 @@ The priced fields (`amount_local`, `fee`, `exchange_rate`) are `0` placeholders 
 
 Note the field names differ from the order object: `exchange_rate` (not `rate`), and there is no `release_chain`, `release_asset`, or `expires_at`.
 
-**Optional fields are omitted from the webhook payload when unset** — `failure_reason` appears on `onramp.failed`, `release_tx_hash` on `onramp.released` and afterwards. This is the opposite of the order object, which keeps the key and sets it to `null`. Write your webhook checks against a missing key, and your order-object checks against `null`; a single shared helper that assumes one behaviour will misread the other surface.
+**Optional fields are omitted from the webhook payload when unset** — `failure_reason` appears on `onramp.failed` and `onramp.cancelled`, `release_tx_hash` on `onramp.released` and afterwards. This is the opposite of the order object, which keeps the key and sets it to `null`. Write your webhook checks against a missing key, and your order-object checks against `null`; a single shared helper that assumes one behaviour will misread the other surface.
 
 Signed with HMAC-SHA256 over the raw request body using your webhook secret, in the `X-Minisend-Signature` header (lower-case hex). The header is only attached when a webhook secret is configured on your account — if none is set, deliveries arrive unsigned, so treat a missing signature as a configuration problem to fix rather than something to skip verification for. Verify against the raw bytes, not a re-serialized parse. Full delivery, retry, and verification detail is in `references/webhooks.md`.
 
 ## Currency support
 
-**On-ramp collects KES or NGN.** KES via an M-Pesa or Airtel Money payment prompt; NGN via a bank transfer to a virtual account. Nothing else, today.
+**On-ramp collects KES or NGN.** KES via an M-Pesa payment prompt; NGN via a bank transfer to a virtual account. Nothing else, today.
 
 Do not carry the off-ramp currency list over. Off-ramp pays out KES, NGN, GHS, and UGX; on-ramp collects KES or NGN only. Anything else is rejected outright:
 
@@ -485,7 +489,7 @@ Do not carry the off-ramp currency list over. Off-ramp pays out KES, NGN, GHS, a
 { "error": "currency must be KES (M-Pesa) or NGN (bank transfer)." }
 ```
 
-For KES, mobile networks are `Safaricom` and `Airtel` — the same two canonical values off-ramp uses, and the same accepted phone-number input shapes. See `references/recipients.md` for the formats. Kenyan numbers on other carriers are real numbers but have no route here, and are rejected with `Only Safaricom and Airtel numbers are supported.` For NGN there is no phone or network concept at all — the customer is identified only by the bank transfer they make, and their `refund_account` is how money finds its way back to them if needed.
+For KES, the only network is `Safaricom` (M-Pesa), with the same accepted phone-number input shapes as off-ramp. See `references/recipients.md` for the formats. Kenyan numbers on other carriers, Airtel included, are real numbers but have no route here, and are rejected with `Only Safaricom M-Pesa numbers are supported.` For NGN there is no phone or network concept at all — the customer is identified only by the bank transfer they make, and their `refund_account` is how money finds its way back to them if needed.
 
 ## Limits
 
@@ -543,7 +547,7 @@ Everything that can go wrong after the prompt is sent, and what you observe.
 
 | What the customer does | Order becomes | Event | `failure_reason` |
 | --- | --- | --- | --- |
-| Declines / cancels the prompt | `failed` | `onramp.failed` | `stk_failed: <detail>` |
+| Declines / cancels the prompt | `cancelled` | `onramp.cancelled` | `stk_failed: <detail>` |
 | Has insufficient balance | `failed` | `onramp.failed` | `stk_failed: <detail>` |
 | Ignores the prompt until it dies on the handset | `failed`, or `expired` if no failure notice ever arrives | `onramp.failed` or `onramp.expired` | `stk_failed: <detail>`, or none on expiry |
 | Never receives a prompt (send failed at creation) | `failed`, immediately | none | `stk_initiation_failed: <detail>` |
@@ -776,6 +780,6 @@ export function handleWebhook(rawBody: string, signature: string) {
 - **Deduplicating webhooks on `order_id` alone.** One order legitimately produces two different events. Key on `order_id` plus `event`.
 - **Sealing an order in your own system on `expired` or `failed`.** A late confirmation can still complete it. Handle `onramp.completed` idempotently at any point.
 - **Assuming on-ramp supports the off-ramp currencies.** It's KES and NGN only, not GHS or UGX.
-- **Sending `network: "mpesa"` or `"safaricom"` on a KES order.** Only the exact strings `Safaricom` and `Airtel` are honoured; anything else is ignored without an error. Omit the field and let it auto-detect.
+- **Sending `network: "mpesa"` or `"safaricom"` on a KES order.** Only the exact string `Safaricom` is honoured (`Airtel` is refused); anything else is ignored without an error. Omit the field and let it auto-detect.
 - **Looking for `reference` in the response.** You send `reference`; you get back `external_reference`.
 - **Polling for `deposit_received` and treating a miss as failure.** There's no webhook for it, so absence just means you haven't polled recently enough, not that the transfer failed.
